@@ -6,11 +6,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/REllwood/clipclean.git"
+    "url": "git+https://github.com/REllwood/Clipclean.git"
   },
-  "homepage": "https://github.com/REllwood/clipclean#readme",
+  "homepage": "https://github.com/REllwood/Clipclean#readme",
   "bugs": {
-    "url": "https://github.com/REllwood/clipclean/issues"
+    "url": "https://github.com/REllwood/Clipclean/issues"
   },
   "type": "module",
   "engines": {

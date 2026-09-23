@@ -25,8 +25,8 @@ Copied text carries more than you can see: zero-width characters, terminal contr
 Requires Node.js 22 or newer. No `npm install` needed.
 
 ```sh
-git clone https://github.com/REllwood/clipclean.git
-cd clipclean
+git clone https://github.com/REllwood/Clipclean.git
+cd Clipclean
 npm start
 ```
 
