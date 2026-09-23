@@ -1,0 +1,25 @@
+{
+  "name": "clipclean",
+  "version": "0.1.0",
+  "description": "See what is hiding in copied content before it reaches the next application.",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REllwood/clipclean.git"
+  },
+  "homepage": "https://github.com/REllwood/clipclean#readme",
+  "bugs": {
+    "url": "https://github.com/REllwood/clipclean/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test",
+    "check": "node scripts/check.mjs",
+    "cli": "node src/cli.js"
+  }
+}

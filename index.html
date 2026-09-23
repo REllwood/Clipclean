@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Inspect supplied text, reveal hidden characters and preview named transformations locally.">
+  <title>Clipclean</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/src/styles.css">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="overline">Portable text workbench</p>
+      <a href="#input-text">Clipclean</a>
+    </div>
+    <p>Paste or type deliberately. This web build does not read the clipboard and has no native macOS pasteboard access.</p>
+    <button id="sample-button" type="button">Load synthetic release note</button>
+  </header>
+
+  <main>
+    <aside class="recipe-rail" aria-labelledby="recipe-title">
+      <p class="overline">Transformation plan</p>
+      <h1 id="recipe-title">Named recipe</h1>
+      <label for="recipe-select">Recipe</label>
+      <select id="recipe-select"></select>
+      <div id="recipe-rules" class="rule-list"></div>
+      <details>
+        <summary>Build a local recipe</summary>
+        <label for="custom-name">Recipe name</label>
+        <input id="custom-name" maxlength="80" placeholder="Support snippet">
+        <fieldset id="custom-rules">
+          <legend>Opt-in rules</legend>
+        </fieldset>
+        <button id="save-recipe" type="button">Save recipe definition</button>
+        <p>Only the name and selected rule identifiers are stored. Text is never stored.</p>
+      </details>
+      <button id="transform-button" class="primary" type="button">Inspect and apply recipe</button>
+      <div id="job-status" class="job-status" role="status">Waiting for supplied text.</div>
+      <button id="cancel-job" type="button" hidden>Cancel current work</button>
+    </aside>
+
+    <section class="workbench">
+      <div class="text-pane">
+        <div class="pane-heading">
+          <div><p class="overline">Immutable snapshot</p><h2>Supplied text</h2></div>
+          <span id="input-size">0 characters</span>
+        </div>
+        <label class="visually-hidden" for="input-text">Text to inspect</label>
+        <textarea id="input-text" spellcheck="false" placeholder="Paste or type text here. Nothing is read automatically."></textarea>
+        <section class="inspection" aria-labelledby="inspection-title">
+          <h3 id="inspection-title">Inspection ledger</h3>
+          <div id="inspection-content"><p>Run the inspection to reveal hidden characters and warnings.</p></div>
+        </section>
+      </div>
+
+      <div class="text-pane output-pane">
+        <div class="pane-heading">
+          <div><p class="overline">Recipe result</p><h2>Preview output</h2></div>
+          <button id="copy-button" type="button" disabled>Copy cleaned text</button>
+        </div>
+        <label class="visually-hidden" for="output-text">Cleaned text preview</label>
+        <textarea id="output-text" readonly placeholder="Output appears after inspection and transformation."></textarea>
+        <section class="diff" aria-labelledby="diff-title">
+          <h3 id="diff-title">Rule-by-rule account</h3>
+          <ol id="diff-list"><li>No transformation has run.</li></ol>
+        </section>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="/src/app.js"></script>
+</body>
+</html>

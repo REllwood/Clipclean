@@ -1,0 +1,5 @@
+<p>Release note​ — build “184”</p>
+Read <a href="https://docs.example.test/release?utm_source=synthetic&section=changes">the changes</a>.
+Token for pattern testing only: ghp_1234567890abcdefghijklmnop
+[31mThis line contains a terminal colour escape.[0m
+=HYPERLINK("https://example.test","Spreadsheet-like line")
