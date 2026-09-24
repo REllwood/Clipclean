@@ -13,6 +13,9 @@
     "url": "https://github.com/REllwood/Clipclean/issues"
   },
   "type": "module",
+  "bin": {
+    "clipclean": "src/cli.js"
+  },
   "engines": {
     "node": ">=22"
   },
