@@ -283,21 +283,77 @@ function stripHtml(value) {
   return restore(tidied);
 }
 
+const trackingParameters = new RegExp(`^(?:${[
+  'utm_[a-z0-9_]+', 'fbclid', 'gclid', 'gclsrc', 'dclid', 'gbraid', 'wbraid', 'srsltid', 'msclkid', 'yclid', 'twclid', 'ttclid',
+  'li_fat_id', 'igshid', 'igsh', 'mc_cid', 'mc_eid', '_hsenc', '_hsmi', '__hssc', '__hstc', '__hsfp', 'hsctatracking',
+  'mkt_tok', 'oly_anon_id', 'oly_enc_id', 'vero_id', 'vero_conv', 'wickedid', 'rb_clickid', 's_cid', '_ga', '_gl'
+].join('|')})$`, 'iu');
+
+// Parameters that only mean tracking on particular sites; elsewhere they may carry meaning.
+const siteTrackingParameters = [
+  { host: /(?:^|\.)(?:youtube\.com|youtu\.be)$/u, key: /^(?:si|feature)$/u },
+  { host: /(?:^|\.)spotify\.com$/u, key: /^si$/u },
+  { host: /(?:^|\.)(?:twitter\.com|x\.com)$/u, key: /^(?:s|t|ref_src|ref_url)$/u },
+  { host: /(?:^|\.)linkedin\.com$/u, key: /^(?:trk|trackingid|lipi|refid)$/iu },
+  { host: /(?:^|\.)amazon\.[a-z.]+$/u, key: /^(?:ref_?|pd_rd_[a-z]+|pf_rd_[a-z]+|qid|sr|crid|sprefix|content-id)$/iu }
+];
+
+function isTrackingParameter(key, host) {
+  return trackingParameters.test(key) || siteTrackingParameters.some((site) => site.host.test(host) && site.key.test(key));
+}
+
+function hostOf(base) {
+  const authority = base.slice(base.indexOf('//') + 2).split(/[/\\]/u)[0];
+  return authority.slice(authority.lastIndexOf('@') + 1).replace(/:\d*$/u, '').replace(/\.$/u, '').toLowerCase();
+}
+
+function count(value, character) {
+  let total = 0;
+  for (const item of value) if (item === character) total += 1;
+  return total;
+}
+
+// Sentence punctuation and unbalanced closing brackets after a URL belong to the surrounding text.
+function splitTrailingPunctuation(raw) {
+  let end = raw.length;
+  while (end > 0) {
+    const character = raw[end - 1];
+    const opening = { ')': '(', ']': '[' }[character];
+    if ('.,;:!?*'.includes(character) || (opening && count(raw.slice(0, end), opening) < count(raw.slice(0, end), character))) end -= 1;
+    else break;
+  }
+  return [raw.slice(0, end), raw.slice(end)];
+}
+
+function decodeKey(key) {
+  try {
+    return decodeURIComponent(key.replace(/\+/gu, ' '));
+  } catch {
+    return key;
+  }
+}
+
+// The query is edited as raw text so that everything else in the URL stays byte for byte.
+function removeTrackingFromUrl(raw) {
+  const [url, trailing] = splitTrailingPunctuation(raw);
+  const hashIndex = url.indexOf('#');
+  const beforeHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? '' : url.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf('?');
+  if (queryIndex === -1) return raw;
+  const base = beforeHash.slice(0, queryIndex);
+  const query = beforeHash.slice(queryIndex + 1);
+  const separator = query.includes('&amp;') ? '&amp;' : '&';
+  const host = hostOf(base);
+  const pairs = query.split(separator);
+  const kept = pairs.filter((pair) => !isTrackingParameter(decodeKey(pair.split('=')[0]), host));
+  if (kept.length === pairs.length) return raw;
+  const remaining = kept.filter(Boolean);
+  return `${base}${remaining.length ? `?${remaining.join(separator)}` : ''}${hash}${trailing}`;
+}
+
 function removeTracking(value) {
-  const urlPattern = /\bhttps?:\/\/[^\s<>"'`]+/giu;
-  return value.replace(urlPattern, (raw) => {
-    const punctuation = /[),.;!?]$/u.test(raw) ? raw.at(-1) : '';
-    const candidate = punctuation ? raw.slice(0, -1) : raw;
-    try {
-      const url = new URL(candidate);
-      for (const key of [...url.searchParams.keys()]) {
-        if (/^(?:utm_.+|fbclid|gclid|dclid|mc_cid|mc_eid|_hsenc|_hsmi)$/iu.test(key)) url.searchParams.delete(key);
-      }
-      return `${url.href}${punctuation}`;
-    } catch {
-      return raw;
-    }
-  });
+  return value.replace(/\bhttps?:\/\/[^\s<>"'`]+/giu, removeTrackingFromUrl);
 }
 
 const ruleDefinitions = {
