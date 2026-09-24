@@ -365,6 +365,43 @@ function displayControls(value) {
   return characters.length > 80 ? `${characters.slice(0, 80).join('')}…` : characters.join('');
 }
 
+// Token shapes published by each provider. Earlier definitions win where matches overlap.
+const tokenStart = String.raw`(?<![A-Za-z0-9_-])`;
+const tokenEnd = String.raw`(?![A-Za-z0-9_-])`;
+const secretDefinitions = [
+  { id: 'private-key', label: 'Private key header', expression: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----/gu },
+  { id: 'url-credentials', label: 'URL with an embedded password', expression: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/giu },
+  { id: 'bearer-token', label: 'Likely bearer credential', expression: /\bBearer[ \t]+[A-Za-z0-9._~+/-]{16,}=*(?![A-Za-z0-9._~+/=-])/giu },
+  { id: 'basic-auth', label: 'Likely basic authentication credential', expression: /\bAuthorization:[ \t]*Basic[ \t]+[A-Za-z0-9+/]{8,}={0,2}(?![A-Za-z0-9+/=])/giu },
+  { id: 'github-token', label: 'Likely GitHub-style token', expression: new RegExp(`${tokenStart}gh[opusr]_[A-Za-z0-9]{20,255}${tokenEnd}`, 'gu') },
+  { id: 'github-fine-grained-token', label: 'Likely GitHub fine-grained token', expression: new RegExp(`${tokenStart}github_pat_[A-Za-z0-9_]{22,255}${tokenEnd}`, 'gu') },
+  { id: 'gitlab-token', label: 'Likely GitLab access token', expression: new RegExp(`${tokenStart}glpat-[A-Za-z0-9_-]{20,}${tokenEnd}`, 'gu') },
+  { id: 'anthropic-key', label: 'Likely Anthropic API key', expression: new RegExp(`${tokenStart}sk-ant-[A-Za-z0-9_-]{20,}${tokenEnd}`, 'gu') },
+  { id: 'openai-key', label: 'Likely OpenAI API key', expression: new RegExp(`${tokenStart}sk-(?!ant-)(?=[A-Za-z0-9_-]*\\d)(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}${tokenEnd}`, 'gu') },
+  { id: 'slack-token', label: 'Likely Slack token', expression: new RegExp(`${tokenStart}xox[abposr]-[A-Za-z0-9-]{10,}${tokenEnd}`, 'gu') },
+  { id: 'slack-webhook', label: 'Slack webhook URL', expression: /https:\/\/hooks\.slack\.com\/services\/[A-Za-z0-9/]{20,}/gu },
+  { id: 'stripe-key', label: 'Likely Stripe secret key', expression: new RegExp(`${tokenStart}(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}${tokenEnd}`, 'gu') },
+  { id: 'google-api-key', label: 'Likely Google API key', expression: new RegExp(`${tokenStart}AIza[0-9A-Za-z_-]{35}${tokenEnd}`, 'gu') },
+  { id: 'npm-token', label: 'Likely npm access token', expression: new RegExp(`${tokenStart}npm_[A-Za-z0-9]{36}${tokenEnd}`, 'gu') },
+  { id: 'aws-access-key', label: 'Likely AWS access key identifier', expression: /(?<![A-Z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])/gu },
+  { id: 'aws-secret-key', label: 'Likely AWS secret access key', expression: /aws_?secret_?access_?key["']?[ \t]*[:=][ \t]*["']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/giu },
+  { id: 'jwt', label: 'Likely JSON Web Token', expression: new RegExp(`${tokenStart}eyJ[A-Za-z0-9_-]{8,}\\.eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}${tokenEnd}`, 'gu') }
+];
+
+function secretMatches(text) {
+  const matches = [];
+  secretDefinitions.forEach((definition, order) => {
+    for (const match of text.matchAll(definition.expression)) matches.push({ definition, order, offset: match.index, length: match[0].length });
+  });
+  matches.sort((first, second) => first.offset - second.offset || first.order - second.order);
+  let coveredUntil = 0;
+  return matches.filter((match) => {
+    if (match.offset < coveredUntil) return false;
+    coveredUntil = match.offset + match.length;
+    return true;
+  });
+}
+
 export function validateText(value) {
   if (typeof value !== 'string') throw new TypeError('Clipboard material must be text.');
   if (value.length > MAX_TEXT_CHARACTERS) throw new RangeError(`Text is limited to ${MAX_TEXT_CHARACTERS.toLocaleString('en-AU')} characters.`);
@@ -381,27 +418,15 @@ export function inspectText(value) {
     } else hidden.add({ offset: event.offset, codePoint: formatCodePoint(event.codePoint), name: event.name });
   }
 
-  const warningDefinitions = [
-    { id: 'aws-access-key', label: 'Likely AWS access key identifier', expression: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/gu },
-    { id: 'github-token', label: 'Likely GitHub-style token', expression: /\bgh[opusr]_[A-Za-z0-9]{20,255}\b/gu },
-    { id: 'bearer-token', label: 'Likely bearer credential', expression: /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}\b/giu },
-    { id: 'private-key', label: 'Private key header', expression: /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/gu }
-  ];
-  const secretWarnings = [];
-  let secretWarningTotal = 0;
-  for (const definition of warningDefinitions) {
-    for (const match of text.matchAll(definition.expression)) {
-      secretWarningTotal += 1;
-      if (secretWarnings.length < MAX_FINDINGS_PER_CATEGORY) {
-        secretWarnings.push({
-          id: definition.id,
-          label: definition.label,
-          offset: match.index ?? 0,
-          length: match[0].length,
-          disclosure: 'Pattern match only; review the original text. The matched value is not copied into this warning.'
-        });
-      }
-    }
+  const secretWarnings = collector();
+  for (const match of secretMatches(text)) {
+    secretWarnings.add({
+      id: match.definition.id,
+      label: match.definition.label,
+      offset: match.offset,
+      length: match.length,
+      disclosure: 'Pattern match only; review the original text. The matched value is not copied into this warning.'
+    });
   }
   const terminalControls = collector();
   for (const event of terminalEvents(text)) {
@@ -423,20 +448,20 @@ export function inspectText(value) {
     }
   }
   const multilineCommand = text.includes('\n') && text.split('\n').filter((line) => line.trim()).length > 1;
-  addPositions(text, [...hidden.items, ...hiddenText.items, ...secretWarnings, ...terminalControls.items]);
+  addPositions(text, [...hidden.items, ...hiddenText.items, ...secretWarnings.items, ...terminalControls.items]);
   return {
     characters: text.length,
     bytes: new TextEncoder().encode(text).length,
     lines: text ? text.split(/\r\n?|\n/u).length : 0,
     hidden: hidden.items,
     hiddenText: hiddenText.items,
-    secretWarnings,
+    secretWarnings: secretWarnings.items,
     terminalControls: terminalControls.items,
     formulaLines,
     omittedFindings: {
       hidden: hidden.omitted,
       hiddenText: hiddenText.omitted,
-      likelySecrets: Math.max(0, secretWarningTotal - secretWarnings.length),
+      likelySecrets: secretWarnings.omitted,
       terminalControls: terminalControls.omitted,
       formulaLines: Math.max(0, formulaLineTotal - formulaLines.length)
     },
