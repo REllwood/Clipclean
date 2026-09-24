@@ -176,6 +176,13 @@ function renderInspection(inspection, input) {
     item.textContent = `${finding.label} at character ${finding.offset + 1}. ${finding.disclosure}`;
     list.append(item);
   }
+  for (const finding of inspection.hiddenText) {
+    const item = document.createElement('li');
+    item.className = 'secret';
+    const where = `${finding.characters.toLocaleString('en-AU')} ${finding.kind} at line ${finding.line}, column ${finding.column}`;
+    item.textContent = finding.decoded ? `Hidden text in ${where}: “${finding.decoded}”` : `${where} carry hidden data that is not readable text.`;
+    list.append(item);
+  }
   for (const finding of inspection.hidden) {
     const item = document.createElement('li');
     item.className = 'information';

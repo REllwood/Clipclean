@@ -36,7 +36,7 @@ test('script, style, head and template contents are dropped', () => {
 
 test('entities are decoded once, including numeric and Windows-1252 references', () => {
   assert.equal(strip('Use &amp;lt;div&amp;gt; literally'), 'Use &lt;div&gt; literally');
-  assert.equal(strip('&lt;b&gt; &#8212; &#x1F600; &#150; &copy; &unknown; &#0; &#xD800;'), '<b> — 😀 – © &unknown; � �');
+  assert.equal(strip('&lt;b&gt; &#8212; &#x1F600; &#150; &copy; &unknown; &#0; &#xD800;'), '<b> — 😀 – © &unknown; \uFFFD \uFFFD');
 });
 
 test('lists, tables and formatting whitespace become tidy lines', () => {
