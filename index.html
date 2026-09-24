@@ -12,7 +12,7 @@
   <header class="masthead">
     <div>
       <p class="overline">Portable text workbench</p>
-      <a href="#input-text">Clipclean</a>
+      <h1 class="brand"><a href="#input-text">Clipclean</a></h1>
     </div>
     <p>Paste or type deliberately. This web build does not read the clipboard and has no native macOS pasteboard access.</p>
     <button id="sample-button" type="button">Load synthetic release note</button>
@@ -21,7 +21,7 @@
   <main>
     <aside class="recipe-rail" aria-labelledby="recipe-title">
       <p class="overline">Transformation plan</p>
-      <h1 id="recipe-title">Named recipe</h1>
+      <h2 id="recipe-title">Named recipe</h2>
       <label for="recipe-select">Recipe</label>
       <select id="recipe-select"></select>
       <div id="recipe-rules" class="rule-list"></div>
@@ -44,11 +44,15 @@
     <section class="workbench">
       <div class="text-pane">
         <div class="pane-heading">
-          <div><p class="overline">Immutable snapshot</p><h2>Supplied text</h2></div>
-          <span id="input-size">0 characters</span>
+          <div><p class="overline">Your text</p><h2>Supplied text</h2></div>
+          <div class="pane-actions">
+            <span id="input-size">0 characters</span>
+            <button id="open-file" type="button">Open text file…</button>
+            <input id="file-input" type="file" accept=".txt,.md,.markdown,.csv,.tsv,.log,.json,.html,.htm,text/*" hidden>
+          </div>
         </div>
         <label class="visually-hidden" for="input-text">Text to inspect</label>
-        <textarea id="input-text" spellcheck="false" placeholder="Paste or type text here. Nothing is read automatically."></textarea>
+        <textarea id="input-text" spellcheck="false" placeholder="Paste or type text here, or drop a text file. Nothing is read automatically."></textarea>
         <section class="inspection" aria-labelledby="inspection-title">
           <h3 id="inspection-title">Inspection ledger</h3>
           <div id="inspection-content"><p>Run the inspection to reveal hidden characters and warnings.</p></div>
@@ -62,6 +66,10 @@
         </div>
         <label class="visually-hidden" for="output-text">Cleaned text preview</label>
         <textarea id="output-text" readonly placeholder="Output appears after inspection and transformation."></textarea>
+        <section class="inspection output-check" aria-labelledby="output-check-title">
+          <h3 id="output-check-title">Output check</h3>
+          <div id="output-inspection-content"><p>Run the inspection to check what the cleaned text still contains.</p></div>
+        </section>
         <section class="diff" aria-labelledby="diff-title">
           <h3 id="diff-title">Rule-by-rule account</h3>
           <ol id="diff-list"><li>No transformation has run.</li></ol>
