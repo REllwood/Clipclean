@@ -402,6 +402,23 @@ function secretMatches(text) {
   });
 }
 
+// Spreadsheets evaluate a cell that starts with =, +, - or @. Markdown bullets and rules, diff lines,
+// command-line options, mentions, plain numbers and phone numbers are not treated as formulas.
+function looksLikeFormula(cell) {
+  const value = cell.trimStart();
+  switch (value[0]) {
+    case '=':
+      return !/^=+\s*$/u.test(value);
+    case '+':
+    case '-':
+      return /^[-+](?:[(=@]|[\d.]+\s*[-+*/^&%(]|[A-Za-z_][\w.]*\s*[(|!])/u.test(value);
+    case '@':
+      return /^@[A-Za-z_][\w.]*\s*[(|]/u.test(value);
+    default:
+      return false;
+  }
+}
+
 export function validateText(value) {
   if (typeof value !== 'string') throw new TypeError('Clipboard material must be text.');
   if (value.length > MAX_TEXT_CHARACTERS) throw new RangeError(`Text is limited to ${MAX_TEXT_CHARACTERS.toLocaleString('en-AU')} characters.`);
@@ -438,32 +455,32 @@ export function inspectText(value) {
       ...(event.detail ? { detail: event.detail } : {})
     });
   }
-  const formulaLines = [];
-  let formulaLineTotal = 0;
-  for (const [index, sourceLine] of text.split(/\r\n?|\n/u).entries()) {
-    if (!/^[=+@-]/u.test(sourceLine.trimStart())) continue;
-    formulaLineTotal += 1;
-    if (formulaLines.length < MAX_FINDINGS_PER_CATEGORY) {
-      formulaLines.push({ line: index + 1, label: 'Formula-like line begins with =, +, - or @.' });
-    }
-  }
-  const multilineCommand = text.includes('\n') && text.split('\n').filter((line) => line.trim()).length > 1;
+  const formulaLines = collector();
+  const sourceLines = text.split(/\r\n?|\n/u);
+  sourceLines.forEach((sourceLine, index) => {
+    const cell = sourceLine.split('\t').findIndex(looksLikeFormula);
+    if (cell === -1) return;
+    formulaLines.add(cell === 0
+      ? { line: index + 1, cell: 1, label: 'Formula-like line begins with =, +, - or @.' }
+      : { line: index + 1, cell: cell + 1, label: `Formula-like value in cell ${cell + 1} of a tab-separated line.` });
+  });
+  const multilineCommand = sourceLines.filter((line) => line.trim()).length > 1;
   addPositions(text, [...hidden.items, ...hiddenText.items, ...secretWarnings.items, ...terminalControls.items]);
   return {
     characters: text.length,
     bytes: new TextEncoder().encode(text).length,
-    lines: text ? text.split(/\r\n?|\n/u).length : 0,
+    lines: text ? sourceLines.length : 0,
     hidden: hidden.items,
     hiddenText: hiddenText.items,
     secretWarnings: secretWarnings.items,
     terminalControls: terminalControls.items,
-    formulaLines,
+    formulaLines: formulaLines.items,
     omittedFindings: {
       hidden: hidden.omitted,
       hiddenText: hiddenText.omitted,
       likelySecrets: secretWarnings.omitted,
       terminalControls: terminalControls.omitted,
-      formulaLines: Math.max(0, formulaLineTotal - formulaLines.length)
+      formulaLines: formulaLines.omitted
     },
     multilineCommand,
     limitation: 'Pattern checks can produce false positives and can miss secrets or harmful instructions.'
