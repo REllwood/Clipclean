@@ -27,7 +27,7 @@ function runWithFile(argumentsList, contents) {
 
 test('multi-byte characters that straddle stdin chunk boundaries are decoded intact', () => {
   for (const padding of [65533, 65534, 65535, 65536]) {
-    const result = runWithFile(['--inspect'], `${'a'.repeat(padding)}​tail`);
+    const result = runWithFile(['--inspect'], `${'a'.repeat(padding)}\u200Btail`);
     assert.equal(result.status, 0, result.stderr);
     const inspection = JSON.parse(result.stdout);
     assert.equal(inspection.hidden.length, 1, `zero-width space after ${padding} bytes`);
@@ -36,7 +36,7 @@ test('multi-byte characters that straddle stdin chunk boundaries are decoded int
 });
 
 test('non-ASCII input round-trips byte for byte through a rule that leaves it alone', () => {
-  const input = '😀 é 中文 \u{1F468}‍\u{1F469}\n'.repeat(12_000);
+  const input = '😀 é 中文 \u{1F468}\u200D\u{1F469}\n'.repeat(12_000);
   const result = run(['--rules', 'trim-trailing-space'], input);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, input);
@@ -56,7 +56,7 @@ test('the --recipe=<id> form is accepted', () => {
 });
 
 test('--rules applies an ad hoc list of rules in order', () => {
-  const result = run(['--rules', 'remove-zero-width, normalise-line-endings'], 'a​b\r\nc');
+  const result = run(['--rules', 'remove-zero-width, normalise-line-endings'], 'a\u200Bb\r\nc');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'ab\nc');
 });

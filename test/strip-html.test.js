@@ -58,7 +58,7 @@ test('mixed Markdown and HTML keeps its line structure', () => {
 });
 
 test('invisible characters are left for the rules that report them', () => {
-  assert.equal(strip('﻿<p>x</p> '), '﻿\nx\n ');
+  assert.equal(strip('\uFEFF<p>x</p>\u00A0'), '\uFEFF\nx\n\u00A0');
 });
 
 test('decoded non-breaking spaces do not survive the plain-text and Markdown recipes', () => {
