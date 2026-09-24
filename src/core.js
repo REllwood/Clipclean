@@ -356,7 +356,7 @@ function removeTracking(value) {
   return value.replace(/\bhttps?:\/\/[^\s<>"'`]+/giu, removeTrackingFromUrl);
 }
 
-const ruleDefinitions = {
+const ruleDefinitions = new Map(Object.entries({
   'strip-html': { label: 'Remove HTML markup', transform: stripHtml },
   'remove-tracking': { label: 'Remove common tracking parameters', transform: removeTracking },
   'remove-zero-width': { label: 'Remove zero-width characters', transform: (value) => value.replace(/[\u200B-\u200D\uFEFF]/gu, '') },
@@ -366,9 +366,9 @@ const ruleDefinitions = {
   'replace-non-breaking-spaces': { label: 'Replace non-breaking spaces', transform: (value) => value.replace(/\u00A0/gu, ' ') },
   'normalise-smart-quotes': { label: 'Normalise smart quotes', transform: (value) => value.replace(/[\u2018\u2019]/gu, "'").replace(/[\u201C\u201D]/gu, '"') },
   'trim-trailing-space': { label: 'Trim trailing whitespace', transform: (value) => value.replace(/[ \t]+$/gmu, '') }
-};
+}));
 
-export const RULES = Object.freeze(Object.entries(ruleDefinitions).map(([id, definition]) => ({ id, label: definition.label })));
+export const RULES = Object.freeze([...ruleDefinitions].map(([id, definition]) => Object.freeze({ id, label: definition.label })));
 
 export const BUILT_IN_RECIPES = Object.freeze([
   { id: 'plain-text', name: 'Plain text', rules: ['strip-html', 'replace-non-breaking-spaces', 'normalise-line-endings'] },
@@ -376,16 +376,30 @@ export const BUILT_IN_RECIPES = Object.freeze([
   { id: 'safe-terminal', name: 'Review for terminal', rules: ['strip-terminal-controls', 'remove-directional', 'normalise-line-endings', 'trim-trailing-space'] },
   { id: 'clean-links', name: 'Remove tracking from links', rules: ['remove-tracking'] },
   { id: 'normalise-typography', name: 'Normalise typography', rules: ['replace-non-breaking-spaces', 'normalise-smart-quotes', 'normalise-line-endings'] }
-]);
+].map((recipe) => Object.freeze({ ...recipe, rules: Object.freeze(recipe.rules) })));
+
+function truncateCodePoints(value, limit) {
+  const characters = Array.from(value);
+  return characters.length > limit ? characters.slice(0, limit).join('') : value;
+}
+
+function generatedRecipeId() {
+  const unique = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `custom-${unique}`;
+}
 
 export function validateRecipe(value) {
   if (!value || typeof value !== 'object') throw new TypeError('A recipe must be an object.');
-  const name = typeof value.name === 'string' ? value.name.trim().slice(0, 80) : '';
+  const name = typeof value.name === 'string' ? truncateCodePoints(value.name.trim(), 80) : '';
   if (!name) throw new RangeError('A recipe needs a name.');
   if (!Array.isArray(value.rules) || value.rules.length === 0) throw new RangeError('Select at least one recipe rule.');
   const rules = [...new Set(value.rules)];
-  for (const id of rules) if (!ruleDefinitions[id]) throw new RangeError(`Unknown transformation rule: ${id}`);
-  return { id: typeof value.id === 'string' && value.id.trim() ? value.id.trim().slice(0, 100) : `custom-${Date.now()}`, name, rules };
+  for (const id of rules) {
+    if (typeof id !== 'string') throw new TypeError('Recipe rules must be identified by text.');
+    if (!ruleDefinitions.has(id)) throw new RangeError(`Unknown transformation rule: ${id}`);
+  }
+  const id = typeof value.id === 'string' && value.id.trim() ? truncateCodePoints(value.id.trim(), 100) : generatedRecipeId();
+  return { id, name, rules };
 }
 
 export function applyRecipe(value, recipeValue) {
@@ -395,10 +409,11 @@ export function applyRecipe(value, recipeValue) {
   const edits = [];
   for (const ruleId of recipe.rules) {
     const before = output;
-    output = ruleDefinitions[ruleId].transform(output);
+    const rule = ruleDefinitions.get(ruleId);
+    output = rule.transform(output);
     edits.push({
       ruleId,
-      label: ruleDefinitions[ruleId].label,
+      label: rule.label,
       changed: before !== output,
       before,
       after: output,
