@@ -41,6 +41,7 @@ legend { font-size: .75rem; font-weight: 750; }
 .rule-check { display: flex; gap: .45rem; align-items: start; margin: .45rem 0; font-weight: 500; }
 .rule-check input { width: auto; margin-top: .15rem; }
 #transform-button { width: 100%; margin-top: .5rem; }
+#delete-recipe { width: 100%; margin-top: -.25rem; font-size: .78rem; }
 .job-status { padding: .75rem; border-left: .25rem solid var(--rule); background: var(--panel-soft); margin-top: 1rem; color: var(--muted); font-size: .78rem; line-height: 1.45; }
 .job-status.loading { border-color: var(--yellow); color: var(--text); }
 #cancel-job { width: 100%; margin-top: .5rem; }

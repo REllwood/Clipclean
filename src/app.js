@@ -1,6 +1,8 @@
 import { BUILT_IN_RECIPES, RULES, applyRecipe, inspectText, validateRecipe, visibleText } from './core.js';
 
 const recipeStorageKey = 'clipclean:recipes:v0.1';
+const recipeBackupKey = `${recipeStorageKey}:unreadable`;
+const maxLocalRecipes = 20;
 const sample = `<p>Release note\u200B — build “184”</p>
 Read <a href="https://docs.example.test/release?utm_source=newsletter&section=changes">the changes</a>.
 Token for pattern testing only: ghp_1234567890abcdefghijklmnop
@@ -10,6 +12,7 @@ Token for pattern testing only: ghp_1234567890abcdefghijklmnop
 const elements = {
   recipe: document.querySelector('#recipe-select'),
   recipeRules: document.querySelector('#recipe-rules'),
+  deleteRecipe: document.querySelector('#delete-recipe'),
   customName: document.querySelector('#custom-name'),
   customRules: document.querySelector('#custom-rules'),
   input: document.querySelector('#input-text'),
@@ -23,6 +26,8 @@ const elements = {
 };
 
 let customRecipes = [];
+// Stored entries that could not be validated are kept as they are, so saving never discards them.
+let unreadableRecipes = [];
 let activeController = null;
 let lastResult = null;
 
@@ -82,6 +87,7 @@ function renderRecipeOptions(selectedId) {
 
 function renderSelectedRules() {
   elements.recipeRules.replaceChildren();
+  elements.deleteRecipe.hidden = !customRecipes.some(({ id }) => id === elements.recipe.value);
   const byId = new Map(RULES.map((rule) => [rule.id, rule.label]));
   for (const id of currentRecipe().rules) {
     const text = document.createElement('p');
@@ -104,14 +110,42 @@ function initialiseCustomRules() {
   }
 }
 
+function storeRecipes(recipes) {
+  localStorage.setItem(recipeStorageKey, JSON.stringify([...recipes, ...unreadableRecipes]));
+}
+
 function loadRecipes() {
+  customRecipes = [];
+  unreadableRecipes = [];
+  let raw = null;
   try {
-    const raw = localStorage.getItem(recipeStorageKey);
+    raw = localStorage.getItem(recipeStorageKey);
     const values = raw ? JSON.parse(raw) : [];
-    customRecipes = Array.isArray(values) ? values.map(validateRecipe).slice(0, 20) : [];
+    if (!Array.isArray(values)) throw new TypeError('the stored value is not a list');
+    const takenIds = new Set(BUILT_IN_RECIPES.map(({ id }) => id));
+    for (const value of values) {
+      try {
+        const recipe = validateRecipe(value);
+        if (takenIds.has(recipe.id)) recipe.id = `local-${crypto.randomUUID()}`;
+        takenIds.add(recipe.id);
+        customRecipes.push(recipe);
+      } catch {
+        unreadableRecipes.push(value);
+      }
+    }
+    customRecipes = customRecipes.slice(-maxLocalRecipes);
+    if (unreadableRecipes.length) {
+      setStatus(`${unreadableRecipes.length.toLocaleString('en-AU')} saved recipe definition${unreadableRecipes.length === 1 ? '' : 's'} could not be read and ${unreadableRecipes.length === 1 ? 'was' : 'were'} left untouched.`);
+    }
   } catch (error) {
     customRecipes = [];
-    setStatus(`Local recipe definitions could not be loaded: ${error.message}`);
+    unreadableRecipes = [];
+    try {
+      if (raw !== null && localStorage.getItem(recipeBackupKey) === null) localStorage.setItem(recipeBackupKey, raw);
+    } catch {
+      // Storage is unavailable; there is nothing further to preserve.
+    }
+    setStatus(`Local recipe definitions could not be loaded: ${error.message}.${raw !== null ? ' The stored value was kept as a backup.' : ''}`);
   }
   renderRecipeOptions();
 }
@@ -259,14 +293,30 @@ document.querySelector('#save-recipe').addEventListener('click', () => {
       name: elements.customName.value,
       rules: [...elements.customRules.querySelectorAll('input:checked')].map(({ value }) => value)
     });
-    customRecipes = [...customRecipes, recipe].slice(-20);
-    localStorage.setItem(recipeStorageKey, JSON.stringify(customRecipes));
+    const recipes = [...customRecipes, recipe].slice(-maxLocalRecipes);
+    storeRecipes(recipes);
+    customRecipes = recipes;
     renderRecipeOptions(recipe.id);
+    elements.copy.disabled = true;
     elements.customName.value = '';
     elements.customRules.querySelectorAll('input').forEach((input) => { input.checked = false; });
     setStatus(`Recipe “${recipe.name}” saved locally. No supplied text was stored.`);
   } catch (error) {
     setStatus(`Recipe could not be saved: ${error.message}`);
+  }
+});
+elements.deleteRecipe.addEventListener('click', () => {
+  const recipe = customRecipes.find(({ id }) => id === elements.recipe.value);
+  if (!recipe || !window.confirm(`Delete the local recipe “${recipe.name}”?`)) return;
+  try {
+    const recipes = customRecipes.filter((item) => item !== recipe);
+    storeRecipes(recipes);
+    customRecipes = recipes;
+    renderRecipeOptions();
+    elements.copy.disabled = true;
+    setStatus(`Local recipe “${recipe.name}” deleted. Inspect again before copying.`);
+  } catch (error) {
+    setStatus(`Recipe could not be deleted: ${error.message}`);
   }
 });
 elements.copy.addEventListener('click', async () => {
