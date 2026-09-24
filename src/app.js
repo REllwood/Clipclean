@@ -173,7 +173,7 @@ function renderInspection(inspection, input) {
   for (const finding of inspection.secretWarnings) {
     const item = document.createElement('li');
     item.className = 'secret';
-    item.textContent = `${finding.label} at character ${finding.offset + 1}. ${finding.disclosure}`;
+    item.textContent = `${finding.label} at line ${finding.line}, column ${finding.column}. ${finding.disclosure}`;
     list.append(item);
   }
   for (const finding of inspection.hiddenText) {
