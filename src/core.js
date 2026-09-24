@@ -1,23 +1,248 @@
 export const MAX_TEXT_CHARACTERS = 500_000;
 export const MAX_FINDINGS_PER_CATEGORY = 1_000;
 export const MAX_VISIBLE_PREVIEW_CHARACTERS = 60_000;
+const MAX_DECODED_CHARACTERS = 2_000;
 
-const hiddenCharacters = new Map([
-  [0x00a0, 'non-breaking space'],
-  [0x200b, 'zero-width space'],
-  [0x200c, 'zero-width non-joiner'],
-  [0x200d, 'zero-width joiner'],
-  [0x202a, 'left-to-right embedding'],
-  [0x202b, 'right-to-left embedding'],
-  [0x202c, 'pop directional formatting'],
-  [0x202d, 'left-to-right override'],
-  [0x202e, 'right-to-left override'],
-  [0x2066, 'left-to-right isolate'],
-  [0x2067, 'right-to-left isolate'],
-  [0x2068, 'first strong isolate'],
-  [0x2069, 'pop directional isolate'],
-  [0xfeff, 'zero-width no-break space']
+// Categories decide which rule removes a character: invisible and joiner (remove-zero-width),
+// directional (remove-directional), payload (remove-invisible-payloads), space (replace-non-breaking-spaces)
+// and line-break (normalise-line-endings).
+const invisibleCharacters = new Map([
+  [0x00a0, ['non-breaking space', 'space']],
+  [0x00ad, ['soft hyphen', 'invisible']],
+  [0x034f, ['combining grapheme joiner', 'invisible']],
+  [0x061c, ['Arabic letter mark', 'directional']],
+  [0x115f, ['Hangul choseong filler', 'invisible']],
+  [0x1160, ['Hangul jungseong filler', 'invisible']],
+  [0x1680, ['Ogham space mark', 'space']],
+  [0x17b4, ['Khmer inherent vowel aq', 'invisible']],
+  [0x17b5, ['Khmer inherent vowel aa', 'invisible']],
+  [0x180e, ['Mongolian vowel separator', 'invisible']],
+  [0x2000, ['en quad', 'space']],
+  [0x2001, ['em quad', 'space']],
+  [0x2002, ['en space', 'space']],
+  [0x2003, ['em space', 'space']],
+  [0x2004, ['three-per-em space', 'space']],
+  [0x2005, ['four-per-em space', 'space']],
+  [0x2006, ['six-per-em space', 'space']],
+  [0x2007, ['figure space', 'space']],
+  [0x2008, ['punctuation space', 'space']],
+  [0x2009, ['thin space', 'space']],
+  [0x200a, ['hair space', 'space']],
+  [0x200b, ['zero-width space', 'invisible']],
+  [0x200c, ['zero-width non-joiner', 'joiner']],
+  [0x200d, ['zero-width joiner', 'joiner']],
+  [0x200e, ['left-to-right mark', 'directional']],
+  [0x200f, ['right-to-left mark', 'directional']],
+  [0x2028, ['line separator', 'line-break']],
+  [0x2029, ['paragraph separator', 'line-break']],
+  [0x202a, ['left-to-right embedding', 'directional']],
+  [0x202b, ['right-to-left embedding', 'directional']],
+  [0x202c, ['pop directional formatting', 'directional']],
+  [0x202d, ['left-to-right override', 'directional']],
+  [0x202e, ['right-to-left override', 'directional']],
+  [0x202f, ['narrow no-break space', 'space']],
+  [0x205f, ['medium mathematical space', 'space']],
+  [0x2060, ['word joiner', 'invisible']],
+  [0x2061, ['function application', 'invisible']],
+  [0x2062, ['invisible times', 'invisible']],
+  [0x2063, ['invisible separator', 'invisible']],
+  [0x2064, ['invisible plus', 'invisible']],
+  [0x2066, ['left-to-right isolate', 'directional']],
+  [0x2067, ['right-to-left isolate', 'directional']],
+  [0x2068, ['first strong isolate', 'directional']],
+  [0x2069, ['pop directional isolate', 'directional']],
+  [0x206a, ['inhibit symmetric swapping', 'invisible']],
+  [0x206b, ['activate symmetric swapping', 'invisible']],
+  [0x206c, ['inhibit Arabic form shaping', 'invisible']],
+  [0x206d, ['activate Arabic form shaping', 'invisible']],
+  [0x206e, ['national digit shapes', 'invisible']],
+  [0x206f, ['nominal digit shapes', 'invisible']],
+  [0x3164, ['Hangul filler', 'invisible']],
+  [0xfeff, ['zero-width no-break space', 'invisible']],
+  [0xffa0, ['halfwidth Hangul filler', 'invisible']],
+  [0xfff9, ['interlinear annotation anchor', 'invisible']],
+  [0xfffa, ['interlinear annotation separator', 'invisible']],
+  [0xfffb, ['interlinear annotation terminator', 'invisible']],
+  [0xfffc, ['object replacement character', 'invisible']]
 ]);
+
+// Visible format characters that attach to following digits in Arabic, Syriac and Kaithi text.
+const prependedMarks = /[\u0600-\u0605\u06DD\u070F\u0890\u0891\u08E2\u{110BD}\u{110CD}]/u;
+const formatCharacter = /\p{Cf}/u;
+const invisibleCandidates = /[\u00A0\u00AD\u034F\u061C\u115F\u1160\u1680\u17B4\u17B5\u180E\u2000-\u200F\u2028-\u202F\u205F-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFC\p{Cf}\u{E0100}-\u{E01EF}]/gu;
+const emojiBeforeJoiner = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\uFE0F\u20E3]/u;
+const emojiAfterJoiner = /\p{Extended_Pictographic}/u;
+const joiningScript = /[\p{scx=Arabic}\p{scx=Syriac}\p{scx=Nko}\p{scx=Mongolian}\p{scx=Devanagari}\p{scx=Bengali}\p{scx=Gurmukhi}\p{scx=Gujarati}\p{scx=Oriya}\p{scx=Tamil}\p{scx=Telugu}\p{scx=Kannada}\p{scx=Malayalam}\p{scx=Sinhala}]/u;
+const baseCharacter = /[^\s\p{Cc}\p{Cf}]/u;
+
+const isVariationSelector = (codePoint) => (codePoint >= 0xfe00 && codePoint <= 0xfe0f) || (codePoint >= 0xe0100 && codePoint <= 0xe01ef);
+const isTagCharacter = (codePoint) => codePoint >= 0xe0000 && codePoint <= 0xe007f;
+
+export function formatCodePoint(codePoint) {
+  return `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
+}
+
+function characterBefore(text, index) {
+  if (index <= 0) return '';
+  const low = text.charCodeAt(index - 1);
+  if (low >= 0xdc00 && low <= 0xdfff && index >= 2) {
+    const high = text.charCodeAt(index - 2);
+    if (high >= 0xd800 && high <= 0xdbff) return text.slice(index - 2, index);
+  }
+  return text[index - 1];
+}
+
+function characterAt(text, index) {
+  const codePoint = text.codePointAt(index);
+  return codePoint === undefined ? '' : String.fromCodePoint(codePoint);
+}
+
+// Joiners are part of emoji sequences and of Arabic-script and Indic spelling; elsewhere they only hide.
+function isMeaningfulJoiner(text, index, codePoint) {
+  const before = characterBefore(text, index);
+  const after = characterAt(text, index + 1);
+  if (!before || !after) return false;
+  if (codePoint === 0x200d && emojiBeforeJoiner.test(before) && emojiAfterJoiner.test(after)) return true;
+  return joiningScript.test(before) && joiningScript.test(after);
+}
+
+function runEnd(text, start, predicate) {
+  let index = start;
+  while (index < text.length) {
+    const codePoint = text.codePointAt(index);
+    if (!predicate(codePoint)) break;
+    index += codePoint > 0xffff ? 2 : 1;
+  }
+  return index;
+}
+
+function decodeTagRun(text, start, end) {
+  let decoded = '';
+  for (const character of text.slice(start, end)) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint >= 0xe0020 && codePoint <= 0xe007e) decoded += String.fromCharCode(codePoint - 0xe0000);
+  }
+  return decoded;
+}
+
+function decodeSelectorRun(text, start, end) {
+  const bytes = Array.from(text.slice(start, end), (character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint <= 0xfe0f ? codePoint - 0xfe00 : codePoint - 0xe0100 + 16;
+  });
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes));
+  } catch {
+    return '';
+  }
+}
+
+function truncateDecoded(value) {
+  const characters = Array.from(value);
+  return characters.length > MAX_DECODED_CHARACTERS ? `${characters.slice(0, MAX_DECODED_CHARACTERS).join('')}…` : value;
+}
+
+function* runCharacters(text, start, end, name, category) {
+  for (let index = start; index < end;) {
+    const codePoint = text.codePointAt(index);
+    const length = codePoint > 0xffff ? 2 : 1;
+    yield { type: 'character', offset: index, length, codePoint, name: name(codePoint), category };
+    index += length;
+  }
+}
+
+// Yields every invisible or unusual character that deserves attention, in text order. Runs of tag
+// characters or variation selectors that carry hidden data are announced before their characters.
+function* invisibleEvents(text) {
+  invisibleCandidates.lastIndex = 0;
+  for (let match = invisibleCandidates.exec(text); match; match = invisibleCandidates.exec(text)) {
+    const offset = match.index;
+    const codePoint = text.codePointAt(offset);
+    if (isTagCharacter(codePoint)) {
+      const end = runEnd(text, offset, isTagCharacter);
+      invisibleCandidates.lastIndex = end;
+      const run = text.slice(offset, end);
+      // A black flag followed by tag letters and a cancel tag is a subdivision flag emoji, such as Scotland's.
+      if (characterBefore(text, offset) === '\u{1F3F4}' && /^[\u{E0020}-\u{E007E}]+\u{E007F}$/u.test(run)) continue;
+      yield { type: 'run', offset, end, kind: 'tag characters', count: Array.from(run).length, decoded: truncateDecoded(decodeTagRun(text, offset, end)) };
+      yield* runCharacters(text, offset, end, (point) => (point === 0xe0001 ? 'language tag' : point === 0xe007f ? 'cancel tag' : 'tag character'), 'payload');
+    } else if (isVariationSelector(codePoint)) {
+      const end = runEnd(text, offset, isVariationSelector);
+      invisibleCandidates.lastIndex = end;
+      const count = Array.from(text.slice(offset, end)).length;
+      // One selector after a visible character chooses how that character is drawn, as in ❤\uFE0F.
+      if (count === 1 && baseCharacter.test(characterBefore(text, offset))) continue;
+      if (count > 1) yield { type: 'run', offset, end, kind: 'variation selectors', count, decoded: truncateDecoded(decodeSelectorRun(text, offset, end)) };
+      yield* runCharacters(text, offset, end, () => 'variation selector', 'payload');
+    } else {
+      const known = invisibleCharacters.get(codePoint);
+      if (known && known[1] === 'joiner' && isMeaningfulJoiner(text, offset, codePoint)) continue;
+      if (!known && (prependedMarks.test(match[0]) || !formatCharacter.test(match[0]))) continue;
+      const [name, category] = known ?? [codePoint >= 0x1d173 && codePoint <= 0x1d17a ? 'musical formatting character' : 'format character', 'invisible'];
+      yield { type: 'character', offset, length: match[0].length, codePoint, name, category };
+    }
+  }
+}
+
+function rewriteInvisible(value, categories, replacement = '') {
+  let output = '';
+  let index = 0;
+  for (const event of invisibleEvents(value)) {
+    if (event.type !== 'character' || !categories.has(event.category)) continue;
+    output += value.slice(index, event.offset) + replacement;
+    index = event.offset + event.length;
+  }
+  return index === 0 ? value : output + value.slice(index);
+}
+
+// Adds 1-based line and column numbers, counting columns in code points and treating CR, LF and CRLF as one break each.
+function addPositions(text, findings) {
+  const pending = findings.filter((finding) => typeof finding.offset === 'number').sort((first, second) => first.offset - second.offset);
+  let index = 0;
+  let line = 1;
+  let column = 1;
+  let afterCarriageReturn = false;
+  for (const finding of pending) {
+    while (index < finding.offset) {
+      const code = text.charCodeAt(index);
+      if (code === 0x0a) {
+        if (!afterCarriageReturn) {
+          line += 1;
+          column = 1;
+        }
+        afterCarriageReturn = false;
+        index += 1;
+      } else if (code === 0x0d) {
+        line += 1;
+        column = 1;
+        afterCarriageReturn = true;
+        index += 1;
+      } else {
+        afterCarriageReturn = false;
+        const next = text.charCodeAt(index + 1);
+        index += code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? 2 : 1;
+        column += 1;
+      }
+    }
+    finding.line = line;
+    finding.column = column;
+  }
+}
+
+function collector() {
+  const items = [];
+  let total = 0;
+  return {
+    items,
+    add(item) {
+      total += 1;
+      if (items.length < MAX_FINDINGS_PER_CATEGORY) items.push(item);
+    },
+    get omitted() {
+      return total - items.length;
+    }
+  };
+}
 
 export function validateText(value) {
   if (typeof value !== 'string') throw new TypeError('Clipboard material must be text.');
@@ -27,30 +252,12 @@ export function validateText(value) {
 
 export function inspectText(value) {
   const text = validateText(value);
-  const hidden = [];
-  let offset = 0;
-  let line = 1;
-  let column = 1;
-  let hiddenTotal = 0;
-  for (const character of text) {
-    const codePoint = character.codePointAt(0);
-    if (hiddenCharacters.has(codePoint)) {
-      hiddenTotal += 1;
-      if (hidden.length < MAX_FINDINGS_PER_CATEGORY) {
-        hidden.push({
-          offset,
-          codePoint: `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`,
-          name: hiddenCharacters.get(codePoint),
-          line,
-          column
-        });
-      }
-    }
-    offset += character.length;
-    if (character === '\n') {
-      line += 1;
-      column = 1;
-    } else column += character.length;
+  const hidden = collector();
+  const hiddenText = collector();
+  for (const event of invisibleEvents(text)) {
+    if (event.type === 'run') {
+      hiddenText.add({ offset: event.offset, length: event.end - event.offset, characters: event.count, kind: event.kind, decoded: event.decoded });
+    } else hidden.add({ offset: event.offset, codePoint: formatCodePoint(event.codePoint), name: event.name });
   }
 
   const warningDefinitions = [
@@ -97,16 +304,19 @@ export function inspectText(value) {
     }
   }
   const multilineCommand = text.includes('\n') && text.split('\n').filter((line) => line.trim()).length > 1;
+  addPositions(text, [...hidden.items, ...hiddenText.items, ...secretWarnings, ...terminalControls]);
   return {
     characters: text.length,
     bytes: new TextEncoder().encode(text).length,
     lines: text ? text.split(/\r\n?|\n/u).length : 0,
-    hidden,
+    hidden: hidden.items,
+    hiddenText: hiddenText.items,
     secretWarnings,
     terminalControls,
     formulaLines,
     omittedFindings: {
-      hidden: Math.max(0, hiddenTotal - hidden.length),
+      hidden: hidden.omitted,
+      hiddenText: hiddenText.omitted,
       likelySecrets: Math.max(0, secretWarningTotal - secretWarnings.length),
       terminalControls: Math.max(0, terminalControlTotal - terminalControls.length),
       formulaLines: Math.max(0, formulaLineTotal - formulaLines.length)
@@ -138,9 +348,9 @@ function decodeEntities(value, reserved = '') {
     if (name) return namedEntities.get(name) ?? entity;
     let codePoint = decimal ? Number.parseInt(decimal, 10) : Number.parseInt(hexadecimal, 16);
     codePoint = windows1252.get(codePoint) ?? codePoint;
-    if (codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return '�';
+    if (codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return '\uFFFD';
     const character = String.fromCodePoint(codePoint);
-    return character === reserved ? '�' : character;
+    return character === reserved ? '\uFFFD' : character;
   });
 }
 
@@ -359,11 +569,12 @@ function removeTracking(value) {
 const ruleDefinitions = new Map(Object.entries({
   'strip-html': { label: 'Remove HTML markup', transform: stripHtml },
   'remove-tracking': { label: 'Remove common tracking parameters', transform: removeTracking },
-  'remove-zero-width': { label: 'Remove zero-width characters', transform: (value) => value.replace(/[\u200B-\u200D\uFEFF]/gu, '') },
-  'remove-directional': { label: 'Remove directional formatting characters', transform: (value) => value.replace(/[\u202A-\u202E\u2066-\u2069]/gu, '') },
+  'remove-zero-width': { label: 'Remove zero-width and invisible formatting characters', transform: (value) => rewriteInvisible(value, new Set(['invisible', 'joiner'])) },
+  'remove-directional': { label: 'Remove directional formatting characters', transform: (value) => rewriteInvisible(value, new Set(['directional'])) },
+  'remove-invisible-payloads': { label: 'Remove hidden tag-character and variation-selector text', transform: (value) => rewriteInvisible(value, new Set(['payload'])) },
   'strip-terminal-controls': { label: 'Remove terminal control sequences', transform: (value) => value.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~])?/gu, '').replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '') },
-  'normalise-line-endings': { label: 'Normalise line endings', transform: (value) => value.replace(/\r\n?/gu, '\n') },
-  'replace-non-breaking-spaces': { label: 'Replace non-breaking spaces', transform: (value) => value.replace(/\u00A0/gu, ' ') },
+  'normalise-line-endings': { label: 'Normalise line endings', transform: (value) => value.replace(/\r\n?|[\u2028\u2029]/gu, '\n') },
+  'replace-non-breaking-spaces': { label: 'Replace non-breaking and unusual spaces', transform: (value) => rewriteInvisible(value, new Set(['space']), ' ') },
   'normalise-smart-quotes': { label: 'Normalise smart quotes', transform: (value) => value.replace(/[\u2018\u2019]/gu, "'").replace(/[\u201C\u201D]/gu, '"') },
   'trim-trailing-space': { label: 'Trim trailing whitespace', transform: (value) => value.replace(/[ \t]+$/gmu, '') }
 }));
@@ -372,9 +583,10 @@ export const RULES = Object.freeze([...ruleDefinitions].map(([id, definition]) =
 
 export const BUILT_IN_RECIPES = Object.freeze([
   { id: 'plain-text', name: 'Plain text', rules: ['strip-html', 'replace-non-breaking-spaces', 'normalise-line-endings'] },
-  { id: 'clean-markdown', name: 'Clean Markdown for an issue', rules: ['strip-html', 'remove-tracking', 'remove-zero-width', 'replace-non-breaking-spaces', 'normalise-line-endings', 'trim-trailing-space'] },
-  { id: 'safe-terminal', name: 'Review for terminal', rules: ['strip-terminal-controls', 'remove-directional', 'normalise-line-endings', 'trim-trailing-space'] },
+  { id: 'clean-markdown', name: 'Clean Markdown for an issue', rules: ['strip-html', 'remove-tracking', 'remove-zero-width', 'remove-directional', 'remove-invisible-payloads', 'replace-non-breaking-spaces', 'normalise-line-endings', 'trim-trailing-space'] },
+  { id: 'safe-terminal', name: 'Review for terminal', rules: ['strip-terminal-controls', 'remove-zero-width', 'remove-directional', 'remove-invisible-payloads', 'replace-non-breaking-spaces', 'normalise-line-endings', 'trim-trailing-space'] },
   { id: 'clean-links', name: 'Remove tracking from links', rules: ['remove-tracking'] },
+  { id: 'remove-invisible', name: 'Remove invisible characters', rules: ['remove-zero-width', 'remove-directional', 'remove-invisible-payloads', 'replace-non-breaking-spaces', 'normalise-line-endings'] },
   { id: 'normalise-typography', name: 'Normalise typography', rules: ['replace-non-breaking-spaces', 'normalise-smart-quotes', 'normalise-line-endings'] }
 ].map((recipe) => Object.freeze({ ...recipe, rules: Object.freeze(recipe.rules) })));
 
@@ -423,19 +635,34 @@ export function applyRecipe(value, recipeValue) {
   return { input: original, output, recipe, edits, inspection: inspectText(original), outputInspection: inspectText(output) };
 }
 
+function visiblePlainText(value) {
+  return value.replace(/\t/gu, '⟦tab U+0009⟧').replace(/\r/gu, '⟦carriage return U+000D⟧');
+}
+
 export function visibleText(value) {
   const text = validateText(value);
   let output = '';
-  for (const character of text) {
-    const codePoint = character.codePointAt(0);
-    if (hiddenCharacters.has(codePoint)) output += `⟦${hiddenCharacters.get(codePoint)} ${`U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`}⟧`;
-    else if (character === '\t') output += '⟦tab U+0009⟧';
-    else if (character === '\r') output += '⟦carriage return U+000D⟧';
-    else output += character;
+  let index = 0;
+  let truncated = false;
+  for (const event of invisibleEvents(text)) {
     if (output.length >= MAX_VISIBLE_PREVIEW_CHARACTERS) {
-      output = `${output.slice(0, MAX_VISIBLE_PREVIEW_CHARACTERS)}\n⟦preview truncated at ${MAX_VISIBLE_PREVIEW_CHARACTERS.toLocaleString('en-AU')} characters⟧`;
+      truncated = true;
       break;
     }
+    if (event.offset < index) continue;
+    output += visiblePlainText(text.slice(index, event.offset));
+    if (event.type === 'run') {
+      output += `⟦${event.count.toLocaleString('en-AU')} ${event.kind}${event.decoded ? ` hiding “${event.decoded}”` : ''}⟧`;
+      index = event.end;
+    } else {
+      output += `⟦${event.name} ${formatCodePoint(event.codePoint)}⟧`;
+      index = event.offset + event.length;
+    }
+  }
+  // One character past the limit is enough to tell whether anything was left out.
+  if (!truncated) output += visiblePlainText(text.slice(index, index + MAX_VISIBLE_PREVIEW_CHARACTERS + 1));
+  if (truncated || output.length > MAX_VISIBLE_PREVIEW_CHARACTERS) {
+    output = `${output.slice(0, MAX_VISIBLE_PREVIEW_CHARACTERS)}\n⟦preview truncated at ${MAX_VISIBLE_PREVIEW_CHARACTERS.toLocaleString('en-AU')} characters⟧`;
   }
   return output;
 }
