@@ -116,32 +116,171 @@ export function inspectText(value) {
   };
 }
 
-function decodeBasicEntities(value) {
-  return value
-    .replace(/&nbsp;/giu, '\u00A0')
-    .replace(/&amp;/giu, '&')
-    .replace(/&lt;/giu, '<')
-    .replace(/&gt;/giu, '>')
-    .replace(/&quot;/giu, '"')
-    .replace(/&#39;|&apos;/giu, "'");
+const namedEntities = new Map(Object.entries({
+  amp: '&', AMP: '&', lt: '<', LT: '<', gt: '>', GT: '>', quot: '"', QUOT: '"', apos: "'",
+  nbsp: ' ', ensp: ' ', emsp: ' ', thinsp: ' ', zwnj: '‌', zwj: '‍', lrm: '‎', rlm: '‏', shy: '­',
+  copy: '©', COPY: '©', reg: '®', REG: '®', trade: '™', hellip: '…', mdash: '—', ndash: '–', minus: '−',
+  lsquo: '‘', rsquo: '’', sbquo: '‚', ldquo: '“', rdquo: '”', bdquo: '„', laquo: '«', raquo: '»', lsaquo: '‹', rsaquo: '›',
+  bull: '•', middot: '·', times: '×', divide: '÷', deg: '°', plusmn: '±', micro: 'µ', para: '¶', sect: '§',
+  cent: '¢', pound: '£', yen: '¥', euro: '€', frac12: '½', frac14: '¼', frac34: '¾', sup2: '²', sup3: '³', iexcl: '¡', iquest: '¿'
+}));
+
+// Numeric references in 0x80–0x9F are read as Windows-1252, as browsers do.
+const windows1252 = new Map([
+  [0x80, 0x20ac], [0x82, 0x201a], [0x83, 0x0192], [0x84, 0x201e], [0x85, 0x2026], [0x86, 0x2020], [0x87, 0x2021],
+  [0x88, 0x02c6], [0x89, 0x2030], [0x8a, 0x0160], [0x8b, 0x2039], [0x8c, 0x0152], [0x8e, 0x017d], [0x91, 0x2018],
+  [0x92, 0x2019], [0x93, 0x201c], [0x94, 0x201d], [0x95, 0x2022], [0x96, 0x2013], [0x97, 0x2014], [0x98, 0x02dc],
+  [0x99, 0x2122], [0x9a, 0x0161], [0x9b, 0x203a], [0x9c, 0x0153], [0x9e, 0x017e], [0x9f, 0x0178]
+]);
+
+function decodeEntities(value, reserved = '') {
+  return value.replace(/&(?:#(\d{1,7})|#[xX]([0-9A-Fa-f]{1,6})|([A-Za-z][A-Za-z0-9]{1,31}));/gu, (entity, decimal, hexadecimal, name) => {
+    if (name) return namedEntities.get(name) ?? entity;
+    let codePoint = decimal ? Number.parseInt(decimal, 10) : Number.parseInt(hexadecimal, 16);
+    codePoint = windows1252.get(codePoint) ?? codePoint;
+    if (codePoint === 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return '�';
+    const character = String.fromCodePoint(codePoint);
+    return character === reserved ? '�' : character;
+  });
+}
+
+const htmlElements = new Set(`a abbr address area article aside audio b base bdi bdo big blockquote body br button canvas caption
+  center cite code col colgroup data datalist dd del details dfn dialog div dl dt em embed fieldset figcaption figure font
+  footer form h1 h2 h3 h4 h5 h6 head header hgroup hr html i iframe img input ins kbd label legend li link main map mark menu
+  meta meter nav nobr noscript object ol optgroup option output p param picture pre progress q rp rt ruby s samp script search
+  section select slot small source span strike strong style sub summary sup svg table tbody td template textarea tfoot th
+  thead time title tr track tt u ul var video wbr`.split(/\s+/u));
+const blockElements = new Set(`address article aside blockquote details dialog dl fieldset figure footer form h1 h2 h3 h4 h5 h6
+  header hgroup hr main nav ol p pre section table ul`.split(/\s+/u));
+const lineElements = new Set(['caption', 'dd', 'div', 'dt', 'figcaption', 'legend', 'li', 'option', 'summary', 'tr']);
+const cellElements = new Set(['td', 'th']);
+const droppedContentElements = new Set(['head', 'script', 'style', 'template']);
+
+function isElementName(name) {
+  const lower = name.toLowerCase();
+  if (name.includes(':')) return name === lower; // Office markup such as <o:p>
+  if (name.includes('-')) return name === lower; // custom elements
+  // Mixed-case names such as List<Object> are code, not markup.
+  return htmlElements.has(lower) && (name === lower || name === name.toUpperCase());
+}
+
+const tagStart = /<(\/?)([A-Za-z][A-Za-z0-9-]*(?::[A-Za-z][A-Za-z0-9-]*)?)(?=[\s/>])/uy;
+const declarationStart = /<[!?][A-Za-z]/uy;
+const droppedContentEnd = /<\/(head|script|style|template)(?=[\s/>])/giu;
+
+function findTagEnd(text, index) {
+  let quote = '';
+  for (; index < text.length; index += 1) {
+    const character = text[index];
+    if (quote) {
+      if (character === quote) quote = '';
+    } else if (character === '"' || character === "'") quote = character;
+    else if (character === '>') return index + 1;
+    else if (character === '<') return -1;
+  }
+  return -1;
+}
+
+function readTag(text, start) {
+  if (text.startsWith('<!--', start)) {
+    const close = text.indexOf('-->', start + 4);
+    return close === -1 ? null : { kind: 'comment', end: close + 3 };
+  }
+  if (text.startsWith('<![CDATA[', start)) {
+    const close = text.indexOf(']]>', start + 9);
+    return close === -1 ? null : { kind: 'cdata', end: close + 3, text: text.slice(start + 9, close) };
+  }
+  declarationStart.lastIndex = start;
+  if (declarationStart.test(text)) {
+    const end = findTagEnd(text, start + 2);
+    return end === -1 ? null : { kind: 'declaration', end };
+  }
+  tagStart.lastIndex = start;
+  const match = tagStart.exec(text);
+  if (!match || !isElementName(match[2])) return null;
+  const end = findTagEnd(text, tagStart.lastIndex);
+  if (end === -1) return null;
+  const name = match[2].toLowerCase();
+  const closing = match[1] === '/';
+  const tag = { kind: 'element', name, closing, end, resumeAt: end };
+  if (!closing && droppedContentElements.has(name) && text[end - 2] !== '/') {
+    droppedContentEnd.lastIndex = end;
+    for (let found = droppedContentEnd.exec(text); found; found = droppedContentEnd.exec(text)) {
+      if (found[1].toLowerCase() !== name) continue;
+      const closeEnd = findTagEnd(text, droppedContentEnd.lastIndex);
+      if (closeEnd !== -1) tag.resumeAt = closeEnd;
+      break;
+    }
+  }
+  return tag;
+}
+
+function isStructural(token) {
+  return token.kind === 'element' && (token.name === 'br' || blockElements.has(token.name) || lineElements.has(token.name)
+    || cellElements.has(token.name) || droppedContentElements.has(token.name));
+}
+
+// Markdown code spans and fenced blocks are set aside so that markup inside them survives.
+function protectMarkdownCode(value) {
+  let sentinel = 0xe000;
+  while (value.includes(String.fromCharCode(sentinel))) sentinel += 1;
+  const mark = String.fromCharCode(sentinel);
+  const saved = [];
+  const keep = (segment) => `${mark}${saved.push(segment) - 1}${mark}`;
+  const text = value
+    .replace(/^ {0,3}((`|~)\2{2,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1\2*[ \t]*\r?$|(?![\s\S]))/gmu, keep)
+    .replace(/(?<!`)(`+)(?!`)((?:[^\n]|\n(?![ \t]*\r?\n))+?)(?<!`)\1(?!`)/gu, keep);
+  const restore = (output) => output.replace(new RegExp(`${mark}(\\d+)${mark}`, 'gu'), (_, index) => saved[Number(index)]);
+  return { text, mark, restore };
 }
 
 function stripHtml(value) {
-  let output = '';
-  let insideTag = false;
-  let tag = '';
-  for (const character of value) {
-    if (!insideTag && character === '<') {
-      insideTag = true;
-      tag = '';
-    } else if (insideTag && character === '>') {
-      insideTag = false;
-      if (/^\/?(?:p|div|br|li|h[1-6]|tr)\b/iu.test(tag.trim())) output += '\n';
-    } else if (insideTag) tag += character;
-    else output += character;
+  const { text, mark, restore } = protectMarkdownCode(value);
+  const tokens = [];
+  let textStart = 0;
+  let index = 0;
+  for (let next = text.indexOf('<', index); next !== -1; next = text.indexOf('<', index)) {
+    const tag = readTag(text, next);
+    if (!tag) {
+      index = next + 1;
+      continue;
+    }
+    if (next > textStart) tokens.push({ kind: 'text', text: text.slice(textStart, next) });
+    tokens.push(tag);
+    index = textStart = tag.resumeAt ?? tag.end;
   }
-  if (insideTag) output += `<${tag}`;
-  return decodeBasicEntities(output).replace(/\n{3,}/gu, '\n\n').trim();
+  if (textStart < text.length) tokens.push({ kind: 'text', text: text.slice(textStart) });
+  if (!tokens.some(({ kind }) => kind !== 'text')) return restore(decodeEntities(text, mark));
+
+  const output = [];
+  let lineHasContent = false;
+  const append = (segment) => {
+    if (!segment) return;
+    output.push(segment);
+    const lastBreak = Math.max(segment.lastIndexOf('\n'), segment.lastIndexOf('\r'));
+    const tail = lastBreak === -1 ? segment : segment.slice(lastBreak + 1);
+    lineHasContent = lastBreak === -1 ? lineHasContent || /[^ \t]/u.test(tail) : /[^ \t]/u.test(tail);
+  };
+  tokens.forEach((token, position) => {
+    if (token.kind === 'text') {
+      const previous = tokens[position - 1];
+      const next = tokens[position + 1];
+      // Whitespace between tags is source formatting when either neighbour is structural.
+      if (/^[ \t\r\n\f]*$/u.test(token.text) && previous && next && previous.kind !== 'text' && next.kind !== 'text'
+        && (isStructural(previous) || isStructural(next))) return;
+      append(decodeEntities(token.text, mark));
+    } else if (token.kind === 'cdata') append(token.text);
+    else if (token.kind === 'element') {
+      if (token.name === 'br' || blockElements.has(token.name)) append('\n');
+      else if (lineElements.has(token.name) && lineHasContent) append('\n');
+      else if (cellElements.has(token.name) && !token.closing && lineHasContent) append('\t');
+    }
+  });
+  const tidied = output.join('')
+    .replace(/(^|\r\n|\r|\n)[ \t]+(?=\r\n|\r|\n|$)/gu, '$1')
+    .replace(/(\r\n|\r|\n)(?:\r\n|\r|\n){2,}/gu, '$1$1')
+    .replace(/^[ \t\r\n]+|[ \t\r\n]+$/gu, '');
+  return restore(tidied);
 }
 
 function removeTracking(value) {
@@ -176,8 +315,8 @@ const ruleDefinitions = {
 export const RULES = Object.freeze(Object.entries(ruleDefinitions).map(([id, definition]) => ({ id, label: definition.label })));
 
 export const BUILT_IN_RECIPES = Object.freeze([
-  { id: 'plain-text', name: 'Plain text', rules: ['strip-html', 'normalise-line-endings'] },
-  { id: 'clean-markdown', name: 'Clean Markdown for an issue', rules: ['strip-html', 'remove-tracking', 'remove-zero-width', 'normalise-line-endings', 'trim-trailing-space'] },
+  { id: 'plain-text', name: 'Plain text', rules: ['strip-html', 'replace-non-breaking-spaces', 'normalise-line-endings'] },
+  { id: 'clean-markdown', name: 'Clean Markdown for an issue', rules: ['strip-html', 'remove-tracking', 'remove-zero-width', 'replace-non-breaking-spaces', 'normalise-line-endings', 'trim-trailing-space'] },
   { id: 'safe-terminal', name: 'Review for terminal', rules: ['strip-terminal-controls', 'remove-directional', 'normalise-line-endings', 'trim-trailing-space'] },
   { id: 'clean-links', name: 'Remove tracking from links', rules: ['remove-tracking'] },
   { id: 'normalise-typography', name: 'Normalise typography', rules: ['replace-non-breaking-spaces', 'normalise-smart-quotes', 'normalise-line-endings'] }
