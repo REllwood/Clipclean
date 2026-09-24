@@ -11,7 +11,8 @@ function run(argumentsList) {
 async function modules(directory) {
   const found = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    // Dot-directories hold version control and local tooling, not project code.
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) found.push(...await modules(path));
     if (entry.isFile() && ['.js', '.mjs'].includes(extname(entry.name))) found.push(path);
