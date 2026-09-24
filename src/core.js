@@ -244,6 +244,127 @@ function collector() {
   };
 }
 
+const MAX_TERMINAL_DETAIL_CHARACTERS = 200;
+const controlNames = new Map([[0x07, 'bell'], [0x08, 'backspace'], [0x0b, 'vertical tab'], [0x0c, 'form feed'], [0x7f, 'delete control character']]);
+const terminalCandidates = /[\x01-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]|\r(?!\n)/gu;
+const controlSequence = /(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]/uy;
+const otherEscape = /\x1b[ -/]*[0-~]/uy;
+const stringIntroducers = new Map([
+  ['\x1b]', 'osc'], ['\x9d', 'osc'],
+  ['\x1bP', 'device'], ['\x90', 'device'], ['\x1bX', 'device'], ['\x98', 'device'],
+  ['\x1b^', 'device'], ['\x9e', 'device'], ['\x1b_', 'device'], ['\x9f', 'device']
+]);
+
+function clip(value) {
+  const characters = Array.from(value);
+  return characters.length > MAX_TERMINAL_DETAIL_CHARACTERS ? `${characters.slice(0, MAX_TERMINAL_DETAIL_CHARACTERS).join('')}…` : value;
+}
+
+function decodeBase64Text(value) {
+  try {
+    const bytes = Uint8Array.from(atob(value.replace(/\s/gu, '')), (character) => character.charCodeAt(0));
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return '';
+  }
+}
+
+// Describes an operating system command such as a hyperlink, title change or clipboard write.
+function describeOsc(body) {
+  const [command, ...rest] = body.split(';');
+  if (command === '8') {
+    const target = rest.slice(1).join(';');
+    return target ? { label: 'terminal hyperlink', detail: clip(target) } : { label: 'terminal hyperlink end' };
+  }
+  if (command === '52') {
+    const data = rest.slice(1).join(';');
+    if (data === '?') return { label: 'terminal clipboard read request' };
+    const decoded = decodeBase64Text(data);
+    return { label: 'terminal clipboard write', ...(decoded ? { detail: clip(decoded) } : {}) };
+  }
+  if (['0', '1', '2'].includes(command)) return { label: 'terminal title change', detail: clip(rest.join(';')) };
+  return { label: 'terminal operating system command' };
+}
+
+// Finds the string terminator (ST, or BEL for operating system commands) at or after start.
+function stringTerminator(text, start, allowBell, cache) {
+  const find = (key, needle) => {
+    if (cache[key] === -1 || (cache[key] !== undefined && cache[key] >= start)) return cache[key];
+    cache[key] = text.indexOf(needle, start);
+    return cache[key];
+  };
+  const candidates = [[find('st', '\x1b\\'), 2], [find('c1', '\x9c'), 1]];
+  if (allowBell) candidates.push([find('bell', '\x07'), 1]);
+  const found = candidates.filter(([index]) => index !== -1).sort(([first], [second]) => first - second)[0];
+  return found ? { index: found[0], length: found[1] } : null;
+}
+
+// Yields terminal control characters and escape sequences in text order, each with the span a terminal would consume.
+function* terminalEvents(text) {
+  const mixedLineEndings = text.includes('\n');
+  const cache = {};
+  terminalCandidates.lastIndex = 0;
+  for (let match = terminalCandidates.exec(text); match; match = terminalCandidates.exec(text)) {
+    const offset = match.index;
+    const code = text.charCodeAt(offset);
+    let event;
+    if (code === 0x0d) {
+      // A lone CR among LF line endings returns to the start of the line and can overwrite what was shown.
+      if (!mixedLineEndings) continue;
+      event = { length: 1, label: 'carriage return without line feed', keep: true };
+    } else {
+      const pair = text.slice(offset, offset + 2);
+      const introducer = stringIntroducers.has(pair) ? pair : stringIntroducers.has(text[offset]) ? text[offset] : '';
+      if (introducer) {
+        const kind = stringIntroducers.get(introducer);
+        const bodyStart = offset + introducer.length;
+        const terminator = stringTerminator(text, bodyStart, kind === 'osc', cache);
+        if (!terminator) {
+          event = { length: introducer.length, label: `unterminated ${kind === 'osc' ? 'terminal operating system command' : 'terminal device control string'}; a terminal would hide the text that follows` };
+        } else {
+          const body = text.slice(bodyStart, terminator.index);
+          event = { length: terminator.index + terminator.length - offset, ...(kind === 'osc' ? describeOsc(body) : { label: 'terminal device control string' }) };
+        }
+      } else if (code === 0x1b || code === 0x9b) {
+        controlSequence.lastIndex = offset;
+        otherEscape.lastIndex = offset;
+        const sequence = controlSequence.exec(text) ?? (code === 0x1b ? otherEscape.exec(text) : null);
+        if (sequence) {
+          const label = sequence[0].startsWith('\x1b[') || code === 0x9b
+            ? (sequence[0].endsWith('m') ? 'terminal colour or style sequence' : 'terminal cursor or screen control sequence')
+            : 'terminal escape sequence';
+          event = { length: sequence[0].length, label };
+        } else event = { length: 1, label: code === 0x1b ? 'escape character' : 'C1 control character' };
+      } else if (code >= 0x80 && code <= 0x9f) event = { length: 1, label: 'C1 control character' };
+      else event = { length: 1, label: controlNames.get(code) ?? 'control character' };
+    }
+    terminalCandidates.lastIndex = offset + event.length;
+    yield { offset, codePoint: code, ...event };
+  }
+}
+
+function stripTerminalControls(value) {
+  let output = '';
+  let index = 0;
+  for (const event of terminalEvents(value)) {
+    if (event.keep) continue;
+    output += value.slice(index, event.offset);
+    index = event.offset + event.length;
+  }
+  return index === 0 ? value : output + value.slice(index);
+}
+
+function displayControls(value) {
+  const characters = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    if (code < 0x20) return String.fromCharCode(0x2400 + code);
+    if (code === 0x7f) return String.fromCharCode(0x2421);
+    if (code >= 0x80 && code <= 0x9f) return formatCodePoint(code);
+    return character;
+  });
+  return characters.length > 80 ? `${characters.slice(0, 80).join('')}…` : characters.join('');
+}
+
 export function validateText(value) {
   if (typeof value !== 'string') throw new TypeError('Clipboard material must be text.');
   if (value.length > MAX_TEXT_CHARACTERS) throw new RangeError(`Text is limited to ${MAX_TEXT_CHARACTERS.toLocaleString('en-AU')} characters.`);
@@ -282,17 +403,15 @@ export function inspectText(value) {
       }
     }
   }
-  const terminalControls = [];
-  let terminalControlTotal = 0;
-  for (const match of text.matchAll(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]|\u001b(?:\[[0-?]*[ -/]*[@-~])?/gu)) {
-    terminalControlTotal += 1;
-    if (terminalControls.length < MAX_FINDINGS_PER_CATEGORY) {
-      terminalControls.push({
-        offset: match.index ?? 0,
-        codePoint: `U+${(match[0].codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0')}`,
-        label: match[0].startsWith('\u001b') ? 'terminal escape sequence' : 'control character'
-      });
-    }
+  const terminalControls = collector();
+  for (const event of terminalEvents(text)) {
+    terminalControls.add({
+      offset: event.offset,
+      length: event.length,
+      codePoint: formatCodePoint(event.codePoint),
+      label: event.label,
+      ...(event.detail ? { detail: event.detail } : {})
+    });
   }
   const formulaLines = [];
   let formulaLineTotal = 0;
@@ -304,7 +423,7 @@ export function inspectText(value) {
     }
   }
   const multilineCommand = text.includes('\n') && text.split('\n').filter((line) => line.trim()).length > 1;
-  addPositions(text, [...hidden.items, ...hiddenText.items, ...secretWarnings, ...terminalControls]);
+  addPositions(text, [...hidden.items, ...hiddenText.items, ...secretWarnings, ...terminalControls.items]);
   return {
     characters: text.length,
     bytes: new TextEncoder().encode(text).length,
@@ -312,13 +431,13 @@ export function inspectText(value) {
     hidden: hidden.items,
     hiddenText: hiddenText.items,
     secretWarnings,
-    terminalControls,
+    terminalControls: terminalControls.items,
     formulaLines,
     omittedFindings: {
       hidden: hidden.omitted,
       hiddenText: hiddenText.omitted,
       likelySecrets: Math.max(0, secretWarningTotal - secretWarnings.length),
-      terminalControls: Math.max(0, terminalControlTotal - terminalControls.length),
+      terminalControls: terminalControls.omitted,
       formulaLines: Math.max(0, formulaLineTotal - formulaLines.length)
     },
     multilineCommand,
@@ -572,7 +691,7 @@ const ruleDefinitions = new Map(Object.entries({
   'remove-zero-width': { label: 'Remove zero-width and invisible formatting characters', transform: (value) => rewriteInvisible(value, new Set(['invisible', 'joiner'])) },
   'remove-directional': { label: 'Remove directional formatting characters', transform: (value) => rewriteInvisible(value, new Set(['directional'])) },
   'remove-invisible-payloads': { label: 'Remove hidden tag-character and variation-selector text', transform: (value) => rewriteInvisible(value, new Set(['payload'])) },
-  'strip-terminal-controls': { label: 'Remove terminal control sequences', transform: (value) => value.replace(/\u001b(?:\[[0-?]*[ -/]*[@-~])?/gu, '').replace(/[\u0001-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, '') },
+  'strip-terminal-controls': { label: 'Remove terminal control sequences', transform: stripTerminalControls },
   'normalise-line-endings': { label: 'Normalise line endings', transform: (value) => value.replace(/\r\n?|[\u2028\u2029]/gu, '\n') },
   'replace-non-breaking-spaces': { label: 'Replace non-breaking and unusual spaces', transform: (value) => rewriteInvisible(value, new Set(['space']), ' ') },
   'normalise-smart-quotes': { label: 'Normalise smart quotes', transform: (value) => value.replace(/[\u2018\u2019]/gu, "'").replace(/[\u201C\u201D]/gu, '"') },
@@ -639,25 +758,44 @@ function visiblePlainText(value) {
   return value.replace(/\t/gu, '⟦tab U+0009⟧').replace(/\r/gu, '⟦carriage return U+000D⟧');
 }
 
+function* byOffset(first, second) {
+  let left = first.next();
+  let right = second.next();
+  while (!left.done || !right.done) {
+    if (right.done || (!left.done && left.value.offset <= right.value.offset)) {
+      yield left.value;
+      left = first.next();
+    } else {
+      yield right.value;
+      right = second.next();
+    }
+  }
+}
+
+function visibleLabel(text, event) {
+  if (event.type === 'run') return `⟦${event.count.toLocaleString('en-AU')} ${event.kind}${event.decoded ? ` hiding “${event.decoded}”` : ''}⟧`;
+  if (event.type === 'character') return `⟦${event.name} ${formatCodePoint(event.codePoint)}⟧`;
+  if (event.detail) return `⟦${event.label}: “${event.detail}”⟧`;
+  if (event.length === 1) return `⟦${event.label} ${formatCodePoint(event.codePoint)}⟧`;
+  return `⟦${event.label} ${displayControls(text.slice(event.offset, event.offset + event.length))}⟧`;
+}
+
 export function visibleText(value) {
   const text = validateText(value);
   let output = '';
   let index = 0;
   let truncated = false;
-  for (const event of invisibleEvents(text)) {
+  const terminal = (function* visibleTerminalEvents() {
+    for (const event of terminalEvents(text)) if (!event.keep) yield { type: 'terminal', ...event };
+  }());
+  for (const event of byOffset(invisibleEvents(text), terminal)) {
     if (output.length >= MAX_VISIBLE_PREVIEW_CHARACTERS) {
       truncated = true;
       break;
     }
     if (event.offset < index) continue;
-    output += visiblePlainText(text.slice(index, event.offset));
-    if (event.type === 'run') {
-      output += `⟦${event.count.toLocaleString('en-AU')} ${event.kind}${event.decoded ? ` hiding “${event.decoded}”` : ''}⟧`;
-      index = event.end;
-    } else {
-      output += `⟦${event.name} ${formatCodePoint(event.codePoint)}⟧`;
-      index = event.offset + event.length;
-    }
+    output += visiblePlainText(text.slice(index, event.offset)) + visibleLabel(text, event);
+    index = event.type === 'run' ? event.end : event.offset + event.length;
   }
   // One character past the limit is enough to tell whether anything was left out.
   if (!truncated) output += visiblePlainText(text.slice(index, index + MAX_VISIBLE_PREVIEW_CHARACTERS + 1));

@@ -192,7 +192,7 @@ function renderInspection(inspection, input) {
   for (const finding of inspection.terminalControls) {
     const item = document.createElement('li');
     item.className = 'secret';
-    item.textContent = `${finding.label} ${finding.codePoint} at character ${finding.offset + 1}. Never execute supplied commands from this tool.`;
+    item.textContent = `${finding.label}${finding.detail ? `: “${finding.detail}”` : ''} at line ${finding.line}, column ${finding.column}. Never execute supplied commands from this tool.`;
     list.append(item);
   }
   for (const finding of inspection.formulaLines) {
