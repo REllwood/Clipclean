@@ -24,12 +24,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
 label { display: block; font-size: .75rem; font-weight: 750; margin: .8rem 0 .3rem; }
 .masthead { min-height: 5rem; display: flex; align-items: center; gap: 2rem; padding: .75rem 1.25rem; border-bottom: 1px solid var(--rule); }
+.masthead h1 { margin: 0; font-size: inherit; }
 .masthead a { color: var(--text); font: 800 1.5rem ui-monospace, SFMono-Regular, Menlo, monospace; text-decoration: none; }
 .masthead > p { margin: 0 auto 0 0; max-width: 51rem; color: var(--muted); font-size: .8rem; line-height: 1.45; }
 .overline { color: var(--green); text-transform: uppercase; letter-spacing: .12em; font-size: .64rem; font-weight: 800; margin: 0 0 .3rem; }
 main { display: grid; grid-template-columns: minmax(17rem, 22rem) 1fr; min-height: calc(100vh - 5rem); }
 .recipe-rail { background: var(--panel); border-right: 1px solid var(--rule); padding: 1.5rem 1.2rem; }
-.recipe-rail h1 { margin: 0 0 1.5rem; font: 700 1.7rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.recipe-rail h2 { margin: 0 0 1.5rem; font: 700 1.7rem ui-monospace, SFMono-Regular, Menlo, monospace; }
 .recipe-rail select, .recipe-rail input { width: 100%; }
 .rule-list { margin: 1rem 0; border-top: 1px solid var(--rule); }
 .rule-list p { border-bottom: 1px solid var(--rule); margin: 0; padding: .55rem 0; color: var(--muted); font-size: .76rem; }
@@ -50,10 +51,13 @@ legend { font-size: .75rem; font-weight: 750; }
 .text-pane + .text-pane { border-left: 1px solid var(--rule); }
 .pane-heading { display: flex; justify-content: space-between; align-items: end; min-height: 3.5rem; }
 .pane-heading h2 { margin: 0; font: 700 1.4rem ui-monospace, SFMono-Regular, Menlo, monospace; }
-.pane-heading > span { color: var(--muted); font-size: .72rem; }
+.pane-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: .6rem; }
+.pane-actions > span { color: var(--muted); font-size: .72rem; }
+.pane-actions button { padding: .4rem .6rem; font-size: .75rem; }
 textarea { width: 100%; min-height: 38vh; margin: 1rem 0; resize: vertical; border: 1px solid var(--rule); background: #111416; color: var(--text); padding: 1rem; font: .84rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; }
 .output-pane textarea { background: #191f1c; }
 .inspection, .diff { border-top: 2px solid var(--rule); padding-top: 1rem; }
+.output-check { margin-bottom: 1rem; }
 .inspection h3, .diff h3 { margin: 0 0 .75rem; font: 700 1rem ui-monospace, SFMono-Regular, Menlo, monospace; }
 .inspection-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
 .metric { border-left: .2rem solid var(--green); padding: .5rem; background: var(--panel); font-size: .75rem; }
@@ -68,7 +72,9 @@ textarea { width: 100%; min-height: 38vh; margin: 1rem 0; resize: vertical; bord
 #diff-list strong { display: block; font-size: .82rem; }
 #diff-list span { font-size: .72rem; color: var(--muted); }
 #diff-list details { margin: .4rem 0 0; padding: .4rem 0; }
+.hunk-location { margin: .7rem 0 .3rem; color: var(--muted); font-size: .7rem; }
 .before-after { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+.before-after pre::before { content: attr(aria-label); display: block; margin-bottom: .3rem; color: var(--muted); font: 700 .6rem ui-sans-serif, system-ui, sans-serif; letter-spacing: .1em; text-transform: uppercase; }
 .before-after pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 8rem; overflow: auto; background: #111416; padding: .5rem; font-size: .68rem; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 @media (max-width: 900px) {

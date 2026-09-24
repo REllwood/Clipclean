@@ -1,13 +1,10 @@
-import { BUILT_IN_RECIPES, RULES, applyRecipe, inspectText, validateRecipe, visibleText } from './core.js';
+import { BUILT_IN_RECIPES, MAX_TEXT_CHARACTERS, RULES, applyRecipe, describeChanges, validateRecipe, visibleText } from './core.js';
+import { SAMPLE_TEXT } from './sample.js';
 
 const recipeStorageKey = 'clipclean:recipes:v0.1';
 const recipeBackupKey = `${recipeStorageKey}:unreadable`;
 const maxLocalRecipes = 20;
-const sample = `<p>Release note\u200B — build “184”</p>
-Read <a href="https://docs.example.test/release?utm_source=newsletter&section=changes">the changes</a>.
-Token for pattern testing only: ghp_1234567890abcdefghijklmnop
-\u001b[31mThis line contains a terminal colour escape.\u001b[0m
-=HYPERLINK("https://example.test","Spreadsheet-like line")`;
+const defaultRecipeId = 'clean-markdown';
 
 const elements = {
   recipe: document.querySelector('#recipe-select'),
@@ -18,7 +15,10 @@ const elements = {
   input: document.querySelector('#input-text'),
   output: document.querySelector('#output-text'),
   inputSize: document.querySelector('#input-size'),
+  openFile: document.querySelector('#open-file'),
+  fileInput: document.querySelector('#file-input'),
   inspection: document.querySelector('#inspection-content'),
+  outputInspection: document.querySelector('#output-inspection-content'),
   diff: document.querySelector('#diff-list'),
   copy: document.querySelector('#copy-button'),
   status: document.querySelector('#job-status'),
@@ -30,6 +30,10 @@ let customRecipes = [];
 let unreadableRecipes = [];
 let activeController = null;
 let lastResult = null;
+// Text areas turn CR and CRLF into LF. When text arrives whole from a paste or a file, the exact original is kept
+// here so carriage returns can still be inspected; any edit in the text area falls back to its value.
+let exactText = null;
+let pendingPaste = null;
 
 function setStatus(message, loading = false, cancellable = loading) {
   elements.status.textContent = message;
@@ -58,11 +62,36 @@ async function runJob(label, work, options = {}) {
     setStatus(`${label} complete.`);
     return value;
   } catch (error) {
-    setStatus(error.name === 'AbortError' ? `${label} cancelled. Supplied text was not changed.` : `${label} failed: ${error.message}`);
+    // A job replaced by a newer one leaves the status to its successor.
+    if (activeController === controller) {
+      setStatus(error.name === 'AbortError' ? `${label} cancelled. Supplied text was not changed.` : `${label} failed: ${error.message}`);
+    }
     return null;
   } finally {
     if (activeController === controller) activeController = null;
   }
+}
+
+function plural(count, singular, pluralForm = `${singular}s`) {
+  return `${count.toLocaleString('en-AU')} ${count === 1 ? singular : pluralForm}`;
+}
+
+function suppliedText() {
+  return exactText ?? elements.input.value;
+}
+
+function suppliedTextChanged(message = 'Supplied text changed. Inspect again before copying.') {
+  const text = suppliedText();
+  const carriageReturns = exactText?.includes('\r') ? ' Carriage returns are kept for inspection; the text box shows them as line breaks.' : '';
+  elements.inputSize.textContent = plural(text.length, 'character');
+  elements.copy.disabled = true;
+  setStatus(`${message}${carriageReturns}`);
+}
+
+function loadExactText(text, message) {
+  exactText = text;
+  elements.input.value = text;
+  suppliedTextChanged(message);
 }
 
 function allRecipes() {
@@ -70,7 +99,7 @@ function allRecipes() {
 }
 
 function currentRecipe() {
-  return allRecipes().find(({ id }) => id === elements.recipe.value) ?? BUILT_IN_RECIPES[1];
+  return allRecipes().find(({ id }) => id === elements.recipe.value) ?? BUILT_IN_RECIPES.find(({ id }) => id === defaultRecipeId);
 }
 
 function renderRecipeOptions(selectedId) {
@@ -81,7 +110,7 @@ function renderRecipeOptions(selectedId) {
     option.textContent = `${customRecipes.includes(recipe) ? 'Local: ' : ''}${recipe.name}`;
     elements.recipe.append(option);
   }
-  elements.recipe.value = selectedId && allRecipes().some(({ id }) => id === selectedId) ? selectedId : BUILT_IN_RECIPES[1].id;
+  elements.recipe.value = selectedId && allRecipes().some(({ id }) => id === selectedId) ? selectedId : defaultRecipeId;
   renderSelectedRules();
 }
 
@@ -135,7 +164,7 @@ function loadRecipes() {
     }
     customRecipes = customRecipes.slice(-maxLocalRecipes);
     if (unreadableRecipes.length) {
-      setStatus(`${unreadableRecipes.length.toLocaleString('en-AU')} saved recipe definition${unreadableRecipes.length === 1 ? '' : 's'} could not be read and ${unreadableRecipes.length === 1 ? 'was' : 'were'} left untouched.`);
+      setStatus(`${plural(unreadableRecipes.length, 'saved recipe definition')} could not be read and ${unreadableRecipes.length === 1 ? 'was' : 'were'} left untouched.`);
     }
   } catch (error) {
     customRecipes = [];
@@ -150,8 +179,41 @@ function loadRecipes() {
   renderRecipeOptions();
 }
 
-function renderInspection(inspection, input) {
-  elements.inspection.replaceChildren();
+function findingItem(className, text) {
+  const item = document.createElement('li');
+  if (className) item.className = className;
+  item.textContent = text;
+  return item;
+}
+
+// Consecutive identical invisible characters, such as a run of zero-width spaces, are listed once with a count.
+function groupHidden(findings) {
+  const groups = [];
+  for (const finding of findings) {
+    const previous = groups.at(-1);
+    const codePoint = Number.parseInt(finding.codePoint.slice(2), 16);
+    if (previous && previous.name === finding.name && previous.nextOffset === finding.offset) {
+      previous.count += 1;
+      previous.lastCodePoint = finding.codePoint;
+    } else groups.push({ ...finding, count: 1, lastCodePoint: finding.codePoint });
+    groups.at(-1).nextOffset = finding.offset + (codePoint > 0xffff ? 2 : 1);
+  }
+  return groups;
+}
+
+function remainingFindings(inspection) {
+  const { omittedFindings } = inspection;
+  return [
+    [inspection.secretWarnings.length + omittedFindings.likelySecrets, 'likely secret'],
+    [inspection.hiddenText.length + omittedFindings.hiddenText, 'hidden text run'],
+    [inspection.terminalControls.length + omittedFindings.terminalControls, 'terminal control sequence'],
+    [inspection.hidden.length + omittedFindings.hidden, 'hidden character'],
+    [inspection.formulaLines.length + omittedFindings.formulaLines, 'formula-like line']
+  ].filter(([count]) => count > 0).map(([count, label]) => plural(count, label));
+}
+
+function renderInspection(container, inspection, text, { previewHeading = 'Hidden-character view' } = {}) {
+  container.replaceChildren();
   const grid = document.createElement('div');
   grid.className = 'inspection-grid';
   for (const [label, value] of [
@@ -171,64 +233,37 @@ function renderInspection(inspection, input) {
   const list = document.createElement('ul');
   list.className = 'finding-list';
   for (const finding of inspection.secretWarnings) {
-    const item = document.createElement('li');
-    item.className = 'secret';
-    item.textContent = `${finding.label} at line ${finding.line}, column ${finding.column}. ${finding.disclosure}`;
-    list.append(item);
+    list.append(findingItem('secret', `${finding.label} at line ${finding.line}, column ${finding.column}. ${finding.disclosure}`));
   }
   for (const finding of inspection.hiddenText) {
-    const item = document.createElement('li');
-    item.className = 'secret';
-    const where = `${finding.characters.toLocaleString('en-AU')} ${finding.kind} at line ${finding.line}, column ${finding.column}`;
-    item.textContent = finding.decoded ? `Hidden text in ${where}: “${finding.decoded}”` : `${where} carry hidden data that is not readable text.`;
-    list.append(item);
-  }
-  for (const finding of inspection.hidden) {
-    const item = document.createElement('li');
-    item.className = 'information';
-    item.textContent = `${finding.name} (${finding.codePoint}) at line ${finding.line}, column ${finding.column}.`;
-    list.append(item);
+    const where = `${plural(finding.characters, finding.kind.replace(/s$/u, ''), finding.kind)} at line ${finding.line}, column ${finding.column}`;
+    list.append(findingItem('secret', finding.decoded ? `Hidden text in ${where}: “${finding.decoded}”` : `${where} carry hidden data that is not readable text.`));
   }
   for (const finding of inspection.terminalControls) {
-    const item = document.createElement('li');
-    item.className = 'secret';
-    item.textContent = `${finding.label}${finding.detail ? `: “${finding.detail}”` : ''} at line ${finding.line}, column ${finding.column}. Never execute supplied commands from this tool.`;
-    list.append(item);
+    list.append(findingItem('secret', `${finding.label}${finding.detail ? `: “${finding.detail}”` : ''} at line ${finding.line}, column ${finding.column}. Never execute supplied commands from this tool.`));
+  }
+  for (const group of groupHidden(inspection.hidden)) {
+    const codePoints = group.codePoint === group.lastCodePoint ? group.codePoint : `${group.codePoint}–${group.lastCodePoint}`;
+    const count = group.count > 1 ? `${group.count.toLocaleString('en-AU')} × ` : '';
+    list.append(findingItem('information', `${count}${group.name} (${codePoints}) at line ${group.line}, column ${group.column}.`));
   }
   for (const finding of inspection.formulaLines) {
-    const item = document.createElement('li');
-    item.className = 'information';
-    item.textContent = `Line ${finding.line}: ${finding.label}`;
-    list.append(item);
+    list.append(findingItem('information', `Line ${finding.line}: ${finding.label}`));
   }
   const omitted = Object.values(inspection.omittedFindings).reduce((sum, count) => sum + count, 0);
   if (omitted > 0) {
-    const item = document.createElement('li');
-    item.className = 'information';
-    item.textContent = `${omitted.toLocaleString('en-AU')} additional findings were counted but not rendered. Each finding category is capped at 1,000 records.`;
-    list.append(item);
+    list.append(findingItem('information', `${plural(omitted, 'additional finding')} ${omitted === 1 ? 'was' : 'were'} counted but not listed. Each finding category is capped at 1,000 records.`));
   }
   if (inspection.multilineCommand) {
-    const item = document.createElement('li');
-    item.className = 'information';
-    item.textContent = 'The supplied text has multiple non-empty lines. Review line boundaries before using it in a terminal.';
-    list.append(item);
+    list.append(findingItem('information', 'The text has multiple non-empty lines. Review line boundaries before using it in a terminal.'));
   }
-  if (!list.children.length) {
-    const item = document.createElement('li');
-    item.textContent = `No catalogue warnings were detected. ${inspection.limitation}`;
-    list.append(item);
-  } else {
-    const item = document.createElement('li');
-    item.textContent = inspection.limitation;
-    list.append(item);
-  }
+  list.append(findingItem('', list.children.length ? inspection.limitation : `No catalogue warnings were detected. ${inspection.limitation}`));
   const heading = document.createElement('h4');
-  heading.textContent = 'Hidden-character view';
+  heading.textContent = previewHeading;
   const visible = document.createElement('div');
   visible.className = 'visible-preview';
-  visible.textContent = visibleText(input) || 'Empty text.';
-  elements.inspection.append(grid, list, heading, visible);
+  visible.textContent = visibleText(text) || 'Empty text.';
+  container.append(grid, list, heading, visible);
 }
 
 function renderDiff(result) {
@@ -238,49 +273,99 @@ function renderDiff(result) {
     const name = document.createElement('strong');
     name.textContent = edit.label;
     const summary = document.createElement('span');
-    summary.textContent = edit.changed ? `Changed text; character delta ${edit.characterDelta}.` : 'No matching content; no change.';
     item.append(name, summary);
-    if (edit.changed) {
-      const details = document.createElement('details');
-      const title = document.createElement('summary');
-      title.textContent = 'Show this rule’s before and after';
+    if (!edit.changed) {
+      summary.textContent = 'No matching content; no change.';
+      elements.diff.append(item);
+      continue;
+    }
+    const { hunks, omitted } = describeChanges(edit.before, edit.after);
+    const delta = edit.characterDelta;
+    summary.textContent = `Changed ${plural(hunks.length + omitted, 'place')}; ${delta > 0 ? `${plural(delta, 'character')} added` : delta < 0 ? `${plural(-delta, 'character')} removed` : 'same length'}.`;
+    const details = document.createElement('details');
+    const title = document.createElement('summary');
+    title.textContent = 'Show what this rule changed';
+    details.append(title);
+    for (const hunk of hunks) {
+      const where = document.createElement('p');
+      where.className = 'hunk-location';
+      where.textContent = hunk.lines === 0 ? `Added at line ${hunk.line}` : hunk.lines > 1 ? `Lines ${hunk.line}–${hunk.line + hunk.lines - 1}` : `Line ${hunk.line}`;
       const comparison = document.createElement('div');
       comparison.className = 'before-after';
-      const before = document.createElement('pre');
-      before.textContent = edit.before;
-      const after = document.createElement('pre');
-      after.textContent = edit.after;
-      comparison.append(before, after);
-      details.append(title, comparison);
-      item.append(details);
+      for (const [label, value, count, none] of [['Before', hunk.before, hunk.lines, '(nothing here before)'], ['After', hunk.after, hunk.addedLines, '(removed)']]) {
+        const pre = document.createElement('pre');
+        pre.setAttribute('aria-label', label);
+        pre.textContent = count === 0 ? none : visibleText(value) || '(empty line)';
+        comparison.append(pre);
+      }
+      details.append(where, comparison);
     }
+    if (omitted) {
+      const more = document.createElement('p');
+      more.className = 'hunk-location';
+      more.textContent = `${plural(omitted, 'more changed line')} not shown.`;
+      details.append(more);
+    }
+    item.append(details);
     elements.diff.append(item);
   }
 }
 
 async function transform() {
-  const result = await runJob(`inspecting and applying “${currentRecipe().name}”`, async (signal) => {
-    const recipe = currentRecipe();
-    const inspection = inspectText(elements.input.value);
-    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-    const transformed = applyRecipe(elements.input.value, recipe);
-    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-    return { ...transformed, inspection };
-  }, { nonInterruptibleBoundary: 'The bounded synchronous inspection has started and cannot be cancelled until it returns.' });
+  const recipe = currentRecipe();
+  const text = suppliedText();
+  const result = await runJob(`inspecting and applying “${recipe.name}”`, async () => applyRecipe(text, recipe), {
+    nonInterruptibleBoundary: 'The bounded synchronous inspection has started and cannot be cancelled until it returns.'
+  });
   if (!result) return;
   lastResult = result;
   elements.output.value = result.output;
   elements.copy.disabled = false;
-  renderInspection(result.inspection, result.input);
+  renderInspection(elements.inspection, result.inspection, result.input);
+  renderInspection(elements.outputInspection, result.outputInspection, result.output, { previewHeading: 'Hidden-character view of the output' });
   renderDiff(result);
-  const changed = result.edits.filter(({ changed }) => changed).length;
-  setStatus(`Inspection complete. ${changed} of ${result.edits.length} named rules changed the preview. Review ${result.inspection.secretWarnings.length} likely-secret warnings before copying.`);
+  const changed = result.edits.filter((edit) => edit.changed).length;
+  const remaining = remainingFindings(result.outputInspection);
+  setStatus(`Inspection complete. ${changed} of ${plural(result.edits.length, 'named rule')} changed the text. ${remaining.length
+    ? `The output still contains ${remaining.join(', ')}. Review the output check before copying.`
+    : 'The output check found no catalogue warnings.'}`);
 }
 
-elements.input.addEventListener('input', () => {
-  elements.inputSize.textContent = `${elements.input.value.length.toLocaleString('en-AU')} characters`;
-  elements.copy.disabled = true;
-  setStatus('Supplied text changed. Inspect again before copying.');
+async function openFile(file) {
+  if (!file) return;
+  if (file.size > MAX_TEXT_CHARACTERS * 4) {
+    setStatus(`“${file.name}” is too large. Text is limited to ${MAX_TEXT_CHARACTERS.toLocaleString('en-AU')} characters.`);
+    return;
+  }
+  try {
+    const bytes = await file.arrayBuffer();
+    let text;
+    let note = '';
+    try {
+      text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      text = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+      note = ' It is not valid UTF-8, so unreadable bytes were shown as replacement characters.';
+    }
+    if (text.length > MAX_TEXT_CHARACTERS) {
+      setStatus(`“${file.name}” is too large. Text is limited to ${MAX_TEXT_CHARACTERS.toLocaleString('en-AU')} characters.`);
+      return;
+    }
+    loadExactText(text, `Opened “${file.name}”.${note} Inspect it before copying anything.`);
+  } catch (error) {
+    setStatus(`“${file.name}” could not be read: ${error.message}`);
+  }
+}
+
+elements.input.addEventListener('paste', (event) => {
+  pendingPaste = event.clipboardData?.getData('text/plain') ?? null;
+});
+elements.input.addEventListener('input', (event) => {
+  // Keep the exact pasted text only when the paste replaced everything, so the text area holds nothing else.
+  const pasted = pendingPaste;
+  pendingPaste = null;
+  exactText = event.inputType === 'insertFromPaste' && pasted !== null && elements.input.value === pasted.replace(/\r\n?/gu, '\n') ? pasted : null;
+  suppliedTextChanged();
 });
 elements.recipe.addEventListener('change', () => {
   renderSelectedRules();
@@ -289,9 +374,21 @@ elements.recipe.addEventListener('change', () => {
 });
 document.querySelector('#transform-button').addEventListener('click', transform);
 document.querySelector('#sample-button').addEventListener('click', () => {
-  elements.input.value = sample;
-  elements.input.dispatchEvent(new Event('input'));
+  loadExactText(SAMPLE_TEXT, 'Synthetic release note loaded. Inspect it to see what it hides.');
   elements.input.focus();
+});
+elements.openFile.addEventListener('click', () => elements.fileInput.click());
+elements.fileInput.addEventListener('change', async () => {
+  await openFile(elements.fileInput.files?.[0]);
+  elements.fileInput.value = '';
+});
+document.addEventListener('dragover', (event) => {
+  if (event.dataTransfer?.types.includes('Files')) event.preventDefault();
+});
+document.addEventListener('drop', (event) => {
+  if (!event.dataTransfer?.files.length) return;
+  event.preventDefault();
+  openFile(event.dataTransfer.files[0]);
 });
 document.querySelector('#save-recipe').addEventListener('click', () => {
   try {
@@ -327,14 +424,16 @@ elements.deleteRecipe.addEventListener('click', () => {
   }
 });
 elements.copy.addEventListener('click', async () => {
-  if (!lastResult || elements.output.value !== lastResult.output) {
-    setStatus('The preview changed. Inspect again before copying.');
+  const recipe = currentRecipe();
+  if (!lastResult || lastResult.input !== suppliedText() || lastResult.recipe.rules.join() !== recipe.rules.join()) {
+    setStatus('The text or recipe changed. Inspect again before copying.');
     return;
   }
+  const output = lastResult.output;
   const copied = await runJob('requesting an explicit browser clipboard write', async (signal) => {
     if (!navigator.clipboard?.writeText) throw new Error('This browser does not provide clipboard writing in the current context. Select the output manually.');
     if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-    await navigator.clipboard.writeText(lastResult.output);
+    await navigator.clipboard.writeText(output);
     return true;
   }, { nonInterruptibleBoundary: 'The browser clipboard request cannot be cancelled after it has been issued.' });
   if (copied) setStatus('Cleaned plain text written through the browser clipboard API after your action. No expiry or native change-count check is available in this web build.');

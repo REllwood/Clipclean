@@ -796,6 +796,122 @@ export function applyRecipe(value, recipeValue) {
   return { input: original, output, recipe, edits, inspection: inspectText(original), outputInspection: inspectText(output) };
 }
 
+const MAX_CHANGE_CHARACTERS = 2_000;
+
+function clipChange(value) {
+  const characters = Array.from(value);
+  return characters.length > MAX_CHANGE_CHARACTERS ? `${characters.slice(0, MAX_CHANGE_CHARACTERS).join('')}…` : value;
+}
+
+// Myers' shortest edit script over lines. Returns null when more than maxEdits insertions and deletions are needed.
+function lineEdits(before, after, maxEdits) {
+  const offset = maxEdits + 1;
+  const frontier = new Int32Array(2 * maxEdits + 3);
+  const history = [];
+  for (let distance = 0; distance <= maxEdits; distance += 1) {
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const down = diagonal === -distance || (diagonal !== distance && frontier[offset + diagonal - 1] < frontier[offset + diagonal + 1]);
+      let x = down ? frontier[offset + diagonal + 1] : frontier[offset + diagonal - 1] + 1;
+      let y = x - diagonal;
+      while (x < before.length && y < after.length && before[x] === after[y]) {
+        x += 1;
+        y += 1;
+      }
+      frontier[offset + diagonal] = x;
+      if (x >= before.length && y >= after.length) {
+        history.push(frontier.slice(offset - distance, offset + distance + 1));
+        return backtrackEdits(history, before.length, after.length);
+      }
+    }
+    history.push(frontier.slice(offset - distance, offset + distance + 1));
+  }
+  return null;
+}
+
+function backtrackEdits(history, beforeLength, afterLength) {
+  const edits = [];
+  let x = beforeLength;
+  let y = afterLength;
+  for (let distance = history.length - 1; distance > 0; distance -= 1) {
+    const previous = history[distance - 1];
+    const at = (diagonal) => previous[diagonal + distance - 1];
+    const diagonal = x - y;
+    const insertion = diagonal === -distance || (diagonal !== distance && at(diagonal - 1) < at(diagonal + 1));
+    const previousX = at(insertion ? diagonal + 1 : diagonal - 1);
+    const previousY = previousX - (insertion ? diagonal + 1 : diagonal - 1);
+    const middleX = insertion ? previousX : previousX + 1;
+    const middleY = insertion ? previousY + 1 : previousY;
+    while (x > middleX && y > middleY) {
+      x -= 1;
+      y -= 1;
+    }
+    edits.push(insertion ? { type: 'insert', before: previousX, after: previousY } : { type: 'delete', before: previousX, after: previousY });
+    x = previousX;
+    y = previousY;
+  }
+  return edits.reverse();
+}
+
+// Groups edits into hunks. A block that replaces as many lines as it removes is split into one hunk per line.
+function hunksFromEdits(edits, beforeLines, afterLines, start) {
+  const hunks = [];
+  let index = 0;
+  while (index < edits.length) {
+    const block = [edits[index]];
+    while (index + block.length < edits.length) {
+      const last = block.at(-1);
+      const next = edits[index + block.length];
+      const adjacent = next.type === 'delete' ? next.before === (last.type === 'delete' ? last.before + 1 : last.before)
+        : next.after === (last.type === 'insert' ? last.after + 1 : last.after);
+      if (!adjacent) break;
+      block.push(next);
+    }
+    index += block.length;
+    const removed = block.filter(({ type }) => type === 'delete').map((edit) => edit.before);
+    const added = block.filter(({ type }) => type === 'insert').map((edit) => edit.after);
+    const firstLine = removed.length ? removed[0] : block[0].before;
+    if (removed.length === added.length) {
+      removed.forEach((line, position) => hunks.push({ line: start + line + 1, lines: 1, addedLines: 1, before: beforeLines[line], after: afterLines[added[position]] }));
+    } else {
+      hunks.push({
+        line: start + firstLine + 1,
+        lines: removed.length,
+        addedLines: added.length,
+        before: removed.map((line) => beforeLines[line]).join('\n'),
+        after: added.map((line) => afterLines[line]).join('\n')
+      });
+    }
+  }
+  return hunks;
+}
+
+// Summarises what changed between two versions as numbered line hunks, using a line diff when the change is
+// small enough and otherwise comparing line by line (same line count) or reporting the differing middle.
+export function describeChanges(before, after, limit = 50) {
+  const beforeLines = before.split('\n');
+  const afterLines = after.split('\n');
+  let start = 0;
+  while (start < beforeLines.length && start < afterLines.length && beforeLines[start] === afterLines[start]) start += 1;
+  let beforeEnd = beforeLines.length;
+  let afterEnd = afterLines.length;
+  while (beforeEnd > start && afterEnd > start && beforeLines[beforeEnd - 1] === afterLines[afterEnd - 1]) {
+    beforeEnd -= 1;
+    afterEnd -= 1;
+  }
+  const beforeMiddle = beforeLines.slice(start, beforeEnd);
+  const afterMiddle = afterLines.slice(start, afterEnd);
+  const edits = lineEdits(beforeMiddle, afterMiddle, 500);
+  let hunks;
+  if (edits) hunks = hunksFromEdits(edits, beforeMiddle, afterMiddle, start);
+  else if (beforeMiddle.length === afterMiddle.length) {
+    hunks = beforeMiddle.flatMap((line, index) => (line === afterMiddle[index] ? [] : [{ line: start + index + 1, lines: 1, addedLines: 1, before: line, after: afterMiddle[index] }]));
+  } else hunks = [{ line: start + 1, lines: beforeMiddle.length, addedLines: afterMiddle.length, before: beforeMiddle.join('\n'), after: afterMiddle.join('\n') }];
+  return {
+    hunks: hunks.slice(0, limit).map((hunk) => ({ ...hunk, before: clipChange(hunk.before), after: clipChange(hunk.after) })),
+    omitted: Math.max(0, hunks.length - limit)
+  };
+}
+
 function visiblePlainText(value) {
   return value.replace(/\t/gu, '⟦tab U+0009⟧').replace(/\r/gu, '⟦carriage return U+000D⟧');
 }
